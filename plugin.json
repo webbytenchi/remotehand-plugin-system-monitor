@@ -1,0 +1,43 @@
+{
+  "id": "remotehand.system-monitor",
+  "name": "RemoteHand System Monitor",
+  "version": "0.1.0",
+  "apiVersion": 1,
+  "author": "RemoteHand",
+  "description": "Local CPU and memory monitoring for RemoteHand.",
+  "runtime": {
+    "kind": "executable",
+    "entrypoints": {
+      "windows-x86_64": "bin/windows-x86_64/remotehand-system-monitor.exe"
+    }
+  },
+  "permissions": [
+    "files.save",
+    "storage.plugin",
+    "tray.contribute",
+    "notifications.show"
+  ],
+  "contributes": {
+    "sidebar": [
+      {
+        "id": "system-monitor",
+        "title": "System Monitor",
+        "icon": "monitor-pulse",
+        "panel": "system-monitor"
+      }
+    ],
+    "panels": [
+      {
+        "id": "system-monitor",
+        "title": "System Monitor",
+        "entry": "ui/index.html"
+      }
+    ],
+    "commands": [
+      {
+        "id": "open",
+        "title": "Open System Monitor"
+      }
+    ]
+  }
+}
