@@ -351,9 +351,14 @@ fn save_config(input:&mut impl Read,output:&mpsc::Sender<Value>,request_id:&mut 
     host_request(input,output,request_id,"storage.set",json!({"key":STORAGE_KEY,"value":config}))?;Ok(())
 }
 
-fn recent_series(history:&VecDeque<Sample>,selector:fn(&Sample)->Option<f64>,seconds:u64)->Vec<Value>{
+fn recent_series(history:&VecDeque<Sample>,selector:fn(&Sample)->Option<f64>,seconds:u64,cfg:&MetricConfig)->Vec<Value>{
     let cutoff=now_ms().saturating_sub(seconds*1000);
-    history.iter().filter(|s|s.timestamp>=cutoff).filter_map(|s|selector(s).map(|v|json!({"value":v}))).collect()
+    history.iter().filter(|s|s.timestamp>=cutoff).filter_map(|s|{
+        selector(s).map(|v|{
+            let h=health(Some(v),cfg);
+            json!({"value":v,"tone":health_name(h),"color":health_color(h,cfg)})
+        })
+    }).collect()
 }
 fn metric_topbar(id:&str,title:&str,value:Option<f64>,unit:&str,series:Vec<Value>,h:Health,cfg:&MetricConfig)->Value{
     let shown=value.map(|v|format!("{:.0}{unit}",v)).unwrap_or_else(||"—".into());
@@ -370,8 +375,8 @@ fn surfaces(store:&Store)->(Value,Value){
     let mem_value=latest.map(|s|s.memory_percent);
     let cpu_h=health(cpu_value,&store.config.cpu);let mem_h=health(mem_value,&store.config.memory);
     let mut top=Vec::new();
-    if store.config.cpu.show_topbar{top.push(metric_topbar("cpu","CPU",cpu_value,"%",recent_series(&store.history,|s|Some(s.cpu_percent),60),cpu_h,&store.config.cpu));}
-    if store.config.memory.show_topbar{top.push(metric_topbar("memory","Memory",mem_value,"%",recent_series(&store.history,|s|Some(s.memory_percent),60),mem_h,&store.config.memory));}
+    if store.config.cpu.show_topbar{top.push(metric_topbar("cpu","CPU",cpu_value,"%",recent_series(&store.history,|s|Some(s.cpu_percent),60,&store.config.cpu),cpu_h,&store.config.cpu));}
+    if store.config.memory.show_topbar{top.push(metric_topbar("memory","Memory",mem_value,"%",recent_series(&store.history,|s|Some(s.memory_percent),60,&store.config.memory),mem_h,&store.config.memory));}
     let tray=vec![
         tray_item("cpu","CPU utilization",cpu_value,"%",cpu_h,&store.config.cpu),
         tray_item("memory","Memory utilization",mem_value,"%",mem_h,&store.config.memory),
@@ -527,4 +532,16 @@ mod tests{
     #[test] fn unavailable_is_not_zero(){let c=metric_config(60.0,90.0);assert_eq!(health(None,&c),Health::Unavailable);}
     #[test] fn transitions_require_two_samples(){let mut t=TransitionTracker::default();assert!(t.observe(Health::Healthy).is_none());assert_eq!(t.observe(Health::Healthy),Some((Health::Unavailable,Health::Healthy)));assert!(t.observe(Health::Critical).is_none());assert_eq!(t.observe(Health::Critical),Some((Health::Healthy,Health::Critical)));}
     #[test] fn config_rejects_overlapping_thresholds(){let mut c=Config::default();c.temperature.healthy_max=95.0;c.temperature.critical_min=90.0;assert!(normalize_config(c).is_err());}
+    #[test] fn topbar_series_colors_each_sample_by_its_own_threshold_state(){
+        let cfg=metric_config(60.0,90.0);
+        let now=now_ms();
+        let mut history=VecDeque::new();
+        history.push_back(Sample{timestamp:now-4000,cpu_percent:40.0,core_percent:vec![],temperature_c:None,memory_percent:0.0,memory_used_bytes:0,memory_available_bytes:0,memory_total_bytes:0});
+        history.push_back(Sample{timestamp:now-2000,cpu_percent:75.0,core_percent:vec![],temperature_c:None,memory_percent:0.0,memory_used_bytes:0,memory_available_bytes:0,memory_total_bytes:0});
+        history.push_back(Sample{timestamp:now,cpu_percent:95.0,core_percent:vec![],temperature_c:None,memory_percent:0.0,memory_used_bytes:0,memory_available_bytes:0,memory_total_bytes:0});
+        let series=recent_series(&history,|s|Some(s.cpu_percent),60,&cfg);
+        assert_eq!(series[0]["color"],cfg.healthy_color);
+        assert_eq!(series[1]["color"],cfg.warning_color);
+        assert_eq!(series[2]["color"],cfg.critical_color);
+    }
 }
