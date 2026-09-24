@@ -63,3 +63,26 @@ Write-Host ""
 Write-Host "Clean installable plugin package created:"
 Write-Host "  $packageDir"
 Write-Host "  Size: $packageMiB MiB"
+
+
+# Create a portable validation ZIP beside the installable folder.
+$zipPath = Join-Path $repo "dist\remotehand-system-monitor-v0.1.0-test-windows-x86_64.zip"
+if (Test-Path $zipPath) {
+    Remove-Item -Force $zipPath
+}
+Compress-Archive -Path (Join-Path $packageDir "*") -DestinationPath $zipPath -CompressionLevel Optimal
+
+$zipHash = (Get-FileHash -Algorithm SHA256 $zipPath).Hash
+$checksumPath = Join-Path $repo "dist\SHA256SUMS.txt"
+"$zipHash  $(Split-Path -Leaf $zipPath)" | Set-Content -Encoding ascii $checksumPath
+
+Write-Host ""
+Write-Host "Validation ZIP created:"
+Write-Host "  $zipPath"
+Write-Host "  SHA256: $zipHash"
+Write-Host ""
+Write-Host "Checksum file:"
+Write-Host "  $checksumPath"
+Write-Host ""
+Write-Host "Important: this validation build uses a framework-dependent .NET 8 sensor helper."
+Write-Host "The target machine needs the .NET 8 runtime installed."
