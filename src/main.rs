@@ -536,9 +536,9 @@ mod tests{
         let cfg=metric_config(60.0,90.0);
         let now=now_ms();
         let mut history=VecDeque::new();
-        history.push_back(Sample{timestamp:now-4000,cpu_percent:40.0,core_percent:vec![],temperature_c:None,memory_percent:0.0,memory_used_bytes:0,memory_available_bytes:0,memory_total_bytes:0});
-        history.push_back(Sample{timestamp:now-2000,cpu_percent:75.0,core_percent:vec![],temperature_c:None,memory_percent:0.0,memory_used_bytes:0,memory_available_bytes:0,memory_total_bytes:0});
-        history.push_back(Sample{timestamp:now,cpu_percent:95.0,core_percent:vec![],temperature_c:None,memory_percent:0.0,memory_used_bytes:0,memory_available_bytes:0,memory_total_bytes:0});
+        history.push_back(Sample{timestamp:now-4000,cpu_percent:40.0,core_percent:vec![],temperature_c:None,temperature_source:None,temperature_sensors:vec![],temperature_provider:String::new(),temperature_error:None,memory_percent:0.0,memory_used_bytes:0,memory_available_bytes:0,memory_total_bytes:0});
+        history.push_back(Sample{timestamp:now-2000,cpu_percent:75.0,core_percent:vec![],temperature_c:None,temperature_source:None,temperature_sensors:vec![],temperature_provider:String::new(),temperature_error:None,memory_percent:0.0,memory_used_bytes:0,memory_available_bytes:0,memory_total_bytes:0});
+        history.push_back(Sample{timestamp:now,cpu_percent:95.0,core_percent:vec![],temperature_c:None,temperature_source:None,temperature_sensors:vec![],temperature_provider:String::new(),temperature_error:None,memory_percent:0.0,memory_used_bytes:0,memory_available_bytes:0,memory_total_bytes:0});
         let series=recent_series(&history,|s|Some(s.cpu_percent),60,&cfg);
         assert_eq!(series[0]["color"],cfg.healthy_color);
         assert_eq!(series[1]["color"],cfg.warning_color);
