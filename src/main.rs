@@ -194,6 +194,10 @@ struct HelperSensorResponse {
     #[serde(default)]
     sensor_inventory: Vec<String>,
     #[serde(default)]
+    pawn_io_installed: bool,
+    #[serde(default)]
+    pawn_io_version: Option<String>,
+    #[serde(default)]
     error: Option<String>,
 }
 
@@ -266,13 +270,18 @@ impl WindowsSystemProvider {
                     provider_error = response.error;
                     if response.sensors.is_empty() && provider_error.is_none() {
                         let hardware = if response.hardware.is_empty() { "no hardware entries".to_string() } else { response.hardware.join("; ") };
+                        let pawn = if response.pawn_io_installed {
+                            format!("PawnIO {}", response.pawn_io_version.as_deref().unwrap_or("installed"))
+                        } else {
+                            "PawnIO is not installed".to_string()
+                        };
                         let temperature_like = response.sensor_inventory.iter()
                             .filter(|line| line.to_ascii_lowercase().contains("temperature"))
                             .take(6).cloned().collect::<Vec<_>>();
                         provider_error = Some(if temperature_like.is_empty() {
-                            format!("Detected hardware: {hardware}. No temperature sensor entries were exposed.")
+                            format!("{pawn}. Detected hardware: {hardware}. No temperature sensor entries were exposed.")
                         } else {
-                            format!("Detected hardware: {hardware}. Temperature entries: {}", temperature_like.join("; "))
+                            format!("{pawn}. Detected hardware: {hardware}. Temperature entries: {}", temperature_like.join("; "))
                         });
                     }
                     sensors = response.sensors.into_iter()
