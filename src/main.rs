@@ -136,7 +136,7 @@ impl Default for Config {
         Self {
             sample_seconds: DEFAULT_SAMPLE_SECONDS,
             default_window_minutes: 15,
-            cpu: metric_config(60.0, 90.0),
+            cpu: metric_config(70.0, 95.0),
             temperature: metric_config(60.0, 90.0),
             memory: metric_config(70.0, 90.0),
         }
