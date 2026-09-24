@@ -1,0 +1,14 @@
+[package]
+name = "remotehand-system-monitor"
+version = "0.1.0"
+edition = "2021"
+autobins = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sysinfo = "0.37.1"
+
+[[bin]]
+name = "remotehand-system-monitor"
+path = "src/main.rs"
