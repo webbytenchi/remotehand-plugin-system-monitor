@@ -491,8 +491,9 @@ fn main()->Result<(),String>{
             }
             "system.export.csv"=>{
                 let minutes=request.params.get("minutes").and_then(Value::as_u64).unwrap_or(15).clamp(1,60);
+                let suggested_name=request.params.get("suggestedName").and_then(Value::as_str).filter(|name| !name.trim().is_empty()).unwrap_or("system-monitor-history.csv");
                 let csv={let guard=store.lock().map_err(|_|"state lock poisoned".to_string())?;csv_for(&guard.history,minutes)};
-                match host_request(&mut input,&output_tx,&mut host_request_id,"file.save",json!({"suggestedName":"remotehand-system-monitor.csv","content":csv,"filters":[{"name":"CSV","extensions":["csv"]}]})){
+                match host_request(&mut input,&output_tx,&mut host_request_id,"file.save",json!({"suggestedName":suggested_name,"content":csv,"filters":[{"name":"CSV","extensions":["csv"]}]})){
                     Ok(result)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result,error:String::new()},
                     Err(error)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error}
                 }
