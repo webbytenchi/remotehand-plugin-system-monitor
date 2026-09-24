@@ -1,8 +1,9 @@
 using System.Text.Json;
 using LibreHardwareMonitor.Hardware;
+using LibreHardwareMonitor.PawnIo;
 
 sealed record TemperatureSensor(string Hardware, string Name, double ValueC);
-sealed record SensorResponse(List<TemperatureSensor> Sensors, List<string> Hardware, List<string> SensorInventory, string? Error);
+sealed record SensorResponse(List<TemperatureSensor> Sensors, List<string> Hardware, List<string> SensorInventory, bool PawnIoInstalled, string? PawnIoVersion, string? Error);
 
 sealed class UpdateVisitor : IVisitor
 {
@@ -39,11 +40,11 @@ static class Program
                 hardwareNames.Add($"{hardware.HardwareType}: {hardware.Name}");
                 CollectInventory(hardware, inventory);
             }
-            return new SensorResponse(sensors, hardwareNames, inventory, null);
+            return new SensorResponse(sensors, hardwareNames, inventory, PawnIo.IsInstalled, PawnIo.Version?.ToString(), null);
         }
         catch (Exception ex)
         {
-            return new SensorResponse(new List<TemperatureSensor>(), new List<string>(), new List<string>(), ex.Message);
+            return new SensorResponse(new List<TemperatureSensor>(), new List<string>(), new List<string>(), PawnIo.IsInstalled, PawnIo.Version?.ToString(), ex.Message);
         }
     }
 
@@ -81,7 +82,7 @@ static class Program
         }
         catch (Exception ex)
         {
-            Console.WriteLine(JsonSerializer.Serialize(new SensorResponse(new(), new(), new(), ex.Message), JsonOptions));
+            Console.WriteLine(JsonSerializer.Serialize(new SensorResponse(new(), new(), new(), PawnIo.IsInstalled, PawnIo.Version?.ToString(), ex.Message), JsonOptions));
             Console.Out.Flush();
             return 2;
         }
