@@ -18,7 +18,7 @@ if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
 if (Test-Path $helperPublishDir) {
     Remove-Item -Recurse -Force $helperPublishDir
 }
-dotnet publish $helperProject -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -p:PublishTrimmed=false -p:DebugType=None -p:DebugSymbols=false -o $helperPublishDir
+dotnet publish $helperProject -c Release -r win-x64 --self-contained false -p:PublishSingleFile=false -p:PublishTrimmed=false -p:DebugType=None -p:DebugSymbols=false -o $helperPublishDir
 
 if (-not (Test-Path $helperExe)) {
     throw "Sensor helper build completed but executable was not found: $helperExe"
