@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::VecDeque;
-use std::io::{self, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
+use std::process::{ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -162,6 +163,8 @@ struct Sample {
     temperature_c: Option<f64>,
     temperature_source: Option<String>,
     temperature_sensors: Vec<TemperatureSensor>,
+    temperature_provider: String,
+    temperature_error: Option<String>,
     memory_percent: f64,
     memory_used_bytes: u64,
     memory_available_bytes: u64,
@@ -174,9 +177,64 @@ struct TemperatureSensor {
     value_c: f64,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HelperTemperatureSensor {
+    hardware: String,
+    name: String,
+    value_c: f64,
+}
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HelperSensorResponse {
+    #[serde(default)]
+    sensors: Vec<HelperTemperatureSensor>,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+struct LibreHardwareMonitorProvider {
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+}
+impl LibreHardwareMonitorProvider {
+    fn new() -> Result<Self, String> {
+        let current = std::env::current_exe().map_err(|e| format!("cannot locate plugin executable: {e}"))?;
+        let helper = current.parent().ok_or_else(|| "plugin executable has no parent directory".to_string())?
+            .join("remotehand-system-monitor-sensors.exe");
+        if !helper.is_file() {
+            return Err(format!("temperature helper not found: {}", helper.display()));
+        }
+        let mut command = Command::new(&helper);
+        command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
+        let mut child = command.spawn().map_err(|e| format!("cannot start temperature helper: {e}"))?;
+        let stdin = child.stdin.take().ok_or_else(|| "temperature helper stdin unavailable".to_string())?;
+        let stdout = child.stdout.take().ok_or_else(|| "temperature helper stdout unavailable".to_string())?;
+        // Dropping Child does not terminate the process; the open pipe handles keep the helper alive.
+        drop(child);
+        Ok(Self { stdin, stdout: BufReader::new(stdout) })
+    }
+    fn sample(&mut self) -> Result<HelperSensorResponse, String> {
+        self.stdin.write_all(b"sample\n").and_then(|_| self.stdin.flush())
+            .map_err(|e| format!("temperature helper write failed: {e}"))?;
+        let mut line = String::new();
+        self.stdout.read_line(&mut line).map_err(|e| format!("temperature helper read failed: {e}"))?;
+        if line.trim().is_empty() { return Err("temperature helper closed without a response".into()); }
+        serde_json::from_str(&line).map_err(|e| format!("invalid temperature helper response: {e}"))
+    }
+}
+
 struct WindowsSystemProvider {
     system: System,
     components: Components,
+    lhm: Option<LibreHardwareMonitorProvider>,
+    lhm_error: Option<String>,
 }
 impl WindowsSystemProvider {
     fn new() -> Self {
@@ -184,26 +242,63 @@ impl WindowsSystemProvider {
         system.refresh_cpu_usage();
         system.refresh_memory();
         let components = Components::new_with_refreshed_list();
-        Self { system, components }
+        let (lhm, lhm_error) = match LibreHardwareMonitorProvider::new() {
+            Ok(provider) => (Some(provider), None),
+            Err(error) => (None, Some(error)),
+        };
+        Self { system, components, lhm, lhm_error }
     }
     fn sample(&mut self) -> Sample {
         self.system.refresh_cpu_usage();
         self.system.refresh_memory();
-        self.components.refresh(false);
 
-        let mut sensors = self.components.iter().filter_map(|component| {
-            let value = component.temperature()? as f64;
-            if !value.is_finite() || value < -20.0 || value > 150.0 { return None; }
-            Some(TemperatureSensor { label: component.label().to_string(), value_c: value })
-        }).collect::<Vec<_>>();
+        let mut provider_name = "LibreHardwareMonitor".to_string();
+        let mut provider_error = self.lhm_error.clone();
+        let mut sensors = Vec::<TemperatureSensor>::new();
+
+        if let Some(lhm) = self.lhm.as_mut() {
+            match lhm.sample() {
+                Ok(response) => {
+                    provider_error = response.error;
+                    sensors = response.sensors.into_iter()
+                        .filter(|s| s.value_c.is_finite() && s.value_c >= -20.0 && s.value_c <= 150.0)
+                        .map(|s| TemperatureSensor {
+                            label: if s.hardware.trim().is_empty() { s.name } else { format!("{} · {}", s.hardware, s.name) },
+                            value_c: s.value_c,
+                        })
+                        .collect();
+                }
+                Err(error) => {
+                    provider_error = Some(error);
+                    self.lhm = None;
+                }
+            }
+        }
+
+        if sensors.is_empty() {
+            self.components.refresh(false);
+            let fallback = self.components.iter().filter_map(|component| {
+                let value = component.temperature()? as f64;
+                if !value.is_finite() || value < -20.0 || value > 150.0 { return None; }
+                Some(TemperatureSensor { label: component.label().to_string(), value_c: value })
+            }).collect::<Vec<_>>();
+            if !fallback.is_empty() {
+                provider_name = "sysinfo fallback".to_string();
+                sensors = fallback;
+            }
+        }
         sensors.sort_by(|a,b| a.label.cmp(&b.label));
 
-        let preferred = sensors.iter()
-            .find(|s| {
-                let l=s.label.to_ascii_lowercase();
-                l.contains("cpu") || l.contains("package") || l.contains("core")
-            })
-            .or_else(|| sensors.first());
+        fn rank(label: &str) -> u8 {
+            let l = label.to_ascii_lowercase();
+            if l.contains("cpu package") { 0 }
+            else if l.contains("core average") { 1 }
+            else if l.contains("core max") { 2 }
+            else if l.contains("package") { 3 }
+            else if l.contains("cpu") || l.contains("core") { 4 }
+            else { 5 }
+        }
+        let preferred = sensors.iter().min_by_key(|s| rank(&s.label));
 
         let total = self.system.total_memory();
         let used = self.system.used_memory();
@@ -217,6 +312,8 @@ impl WindowsSystemProvider {
             temperature_c: preferred.map(|s| s.value_c),
             temperature_source: preferred.map(|s| s.label.clone()),
             temperature_sensors: sensors,
+            temperature_provider: provider_name,
+            temperature_error: provider_error,
             memory_percent,
             memory_used_bytes: used,
             memory_available_bytes: available,
