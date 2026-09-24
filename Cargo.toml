@@ -12,3 +12,6 @@ sysinfo = "0.37.1"
 [[bin]]
 name = "remotehand-system-monitor"
 path = "src/main.rs"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging"] }
