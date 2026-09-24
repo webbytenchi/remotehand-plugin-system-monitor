@@ -21,7 +21,7 @@
 (function(){"use strict";
 var bridge=window.remotehand,state={config:null,latest:null,history:[]},minutes=15,chain=Promise.resolve();
 function el(id){return document.getElementById(id)}function request(method,params){params=params||{};if(!bridge||!bridge.request)return Promise.reject(new Error("plugin bridge unavailable"));var run=function(){return bridge.request(method,params)};var p=chain.then(run,run);chain=p.catch(function(){});return p}
-function fmt(v,u){return Number.isFinite(Number(v))?Math.round(Number(v))+u:"—"}function bytes(v){if(v==null)return"—";var n=Number(v),u=["B","KB","MB","GB","TB"],i=0;while(n>=1024&&i<u.length-1){n/=1024;i++}return n.toFixed(i>=3?1:0)+" "+u[i]}
+function fmt(v,u){return v!==null&&v!==undefined&&v!==""&&Number.isFinite(Number(v))?Math.round(Number(v))+u:"—"}function bytes(v){if(v==null)return"—";var n=Number(v),u=["B","KB","MB","GB","TB"],i=0;while(n>=1024&&i<u.length-1){n/=1024;i++}return n.toFixed(i>=3?1:0)+" "+u[i]}
 function toast(t){var n=el("notice");n.textContent=t;n.style.display="block";clearTimeout(n.t);n.t=setTimeout(function(){n.style.display="none"},2500)}
 function recent(){var c=Date.now()-minutes*60000;return(state.history||[]).filter(function(s){return Number(s.timestamp)>=c})}
 function stats(a){a=a.filter(function(v){return Number.isFinite(v)});if(!a.length)return null;var min=Math.min.apply(null,a),max=Math.max.apply(null,a),sum=a.reduce(function(x,y){return x+y},0);return{min:min,max:max,avg:sum/a.length}}
