@@ -308,9 +308,13 @@ impl AlertTransition {
 
 #[cfg(windows)]
 fn play_alert_sound() {
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn MessageBeep(u_type: u32) -> i32;
+    }
+    const MB_ICONEXCLAMATION: u32 = 0x00000030;
     unsafe {
-        use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBeep, MB_ICONEXCLAMATION};
-        let _=MessageBeep(MB_ICONEXCLAMATION);
+        let _ = MessageBeep(MB_ICONEXCLAMATION);
     }
 }
 #[cfg(not(windows))]
@@ -446,7 +450,7 @@ fn main()->Result<(),String>{
     drop(handshake_output);
 
     let (output_tx,output_rx)=mpsc::channel::<Value>();
-    let writer=thread::spawn(move||{let stdout=io::stdout();let mut output=stdout.lock();while let Ok(value)=output_rx.recv(){write_frame_raw(&mut output,&value)?;}Ok::<(),String>(())});
+    let _writer=thread::spawn(move||{let stdout=io::stdout();let mut output=stdout.lock();while let Ok(value)=output_rx.recv(){write_frame_raw(&mut output,&value)?;}Ok::<(),String>(())});
     let mut host_request_id=1u64;
     let config=load_config(&mut input,&output_tx,&mut host_request_id).unwrap_or_default();
     let store=Arc::new(Mutex::new(Store::new()));
