@@ -2,29 +2,12 @@ $ErrorActionPreference = "Stop"
 
 $repo = Split-Path -Parent $PSScriptRoot
 $sourceExe = Join-Path $repo "target\release\remotehand-system-monitor.exe"
-$helperProject = Join-Path $repo "sensor-helper\RemoteHand.SystemMonitor.Sensors.csproj"
-$helperPublishDir = Join-Path $repo "sensor-helper\bin\publish-win-x64"
-$helperExe = Join-Path $helperPublishDir "remotehand-system-monitor-sensors.exe"
 $stageDir = Join-Path $repo "bin\windows-x86_64"
 $stageExe = Join-Path $stageDir "remotehand-system-monitor.exe"
 $packageDir = Join-Path $repo "dist\remotehand-system-monitor-windows-x86_64"
 $packageBinDir = Join-Path $packageDir "bin\windows-x86_64"
 $packageUiDir = Join-Path $packageDir "ui"
 
-Write-Host "Building RemoteHand System Monitor sensor helper (release)..."
-if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
-    throw ".NET SDK is required to build the Windows CPU temperature helper."
-}
-if (Test-Path $helperPublishDir) {
-    Remove-Item -Recurse -Force $helperPublishDir
-}
-dotnet publish $helperProject -c Release -r win-x64 --self-contained false -p:PublishSingleFile=false -p:PublishTrimmed=false -p:DebugType=None -p:DebugSymbols=false -o $helperPublishDir
-
-if (-not (Test-Path $helperExe)) {
-    throw "Sensor helper build completed but executable was not found: $helperExe"
-}
-
-Write-Host ""
 Write-Host "Building RemoteHand System Monitor (release)..."
 Push-Location $repo
 try {
@@ -39,7 +22,6 @@ if (-not (Test-Path $sourceExe)) {
 
 New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
 Copy-Item -Force $sourceExe $stageExe
-Get-ChildItem -File $helperPublishDir | Copy-Item -Destination $stageDir -Force
 
 if (Test-Path $packageDir) {
     Remove-Item -Recurse -Force $packageDir
@@ -50,8 +32,6 @@ New-Item -ItemType Directory -Force -Path $packageUiDir | Out-Null
 Copy-Item -Force (Join-Path $repo "plugin.json") (Join-Path $packageDir "plugin.json")
 Copy-Item -Force (Join-Path $repo "ui\index.html") (Join-Path $packageUiDir "index.html")
 Copy-Item -Force $sourceExe (Join-Path $packageBinDir "remotehand-system-monitor.exe")
-Get-ChildItem -File $helperPublishDir | Copy-Item -Destination $packageBinDir -Force
-Copy-Item -Force (Join-Path $repo "THIRD-PARTY-NOTICES.md") (Join-Path $packageDir "THIRD-PARTY-NOTICES.md")
 
 $packageBytes = (Get-ChildItem -File -Recurse $packageDir | Measure-Object -Property Length -Sum).Sum
 $packageMiB = [Math]::Round($packageBytes / 1MB, 2)
@@ -83,6 +63,3 @@ Write-Host "  SHA256: $zipHash"
 Write-Host ""
 Write-Host "Checksum file:"
 Write-Host "  $checksumPath"
-Write-Host ""
-Write-Host "Important: this validation build uses a framework-dependent .NET 8 sensor helper."
-Write-Host "The target machine needs the .NET 8 runtime installed."
