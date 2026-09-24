@@ -1,10 +1,10 @@
 # RemoteHand System Monitor
 
-Status: **Planned / parked**
+Status: **v0.1.0 implementation in progress**
 
 This repository is reserved for a future RemoteHand plugin that monitors local system hardware and exposes useful CPU, memory, and GPU telemetry through RemoteHand.
 
-No implementation work has started yet. The notes below capture the current design direction only; they are not frozen scope.
+Implementation has started on the frozen Windows-first v0.1.0 baseline. See `V0.1.0-DESIGN.md` for the accepted v0.1 scope and acceptance criteria.
 
 ## Purpose
 
@@ -267,3 +267,10 @@ Before implementation begins, decide:
 **Parked.**
 
 The repository exists so the design has a clean home. Implementation should begin only after the current RemoteHand / Target Monitor work has reached an appropriate stopping point and the first System Monitor milestone is explicitly scoped.
+
+
+## Current v0.1 implementation branch
+
+`emma/v0.1-baseline` currently contains the Windows-first CPU, per-core, memory, and temperature sampler; rolling one-hour in-memory history; 5/15/30/60-minute panel views; CSV export; top-bar widgets; configurable tray health tiles; transition-based alerts; native notifications; and Windows alert sound support.
+
+Temperature remains provider-validated: the UI exposes the reported sensor/source label and never fabricates a value when no sensor is available.
