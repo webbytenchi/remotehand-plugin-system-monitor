@@ -398,7 +398,7 @@ fn emit_surfaces(output:&mpsc::Sender<Value>,store:&Store)->Result<(),String>{
     send_outbound(output,PluginEvent{message_type:"plugin.event",event:"tray.update",payload:tray})
 }
 fn status_value(store:&Store)->Value{
-    json!({"config":store.config,"latest":store.history.back(),"history":store.history})
+    json!({"config":&store.config,"latest":store.history.back(),"history":&store.history})
 }
 fn emit_alert(output:&mpsc::Sender<Value>,transition:&AlertTransition){
     if !transition.actionable(){return;}
