@@ -190,6 +190,10 @@ struct HelperSensorResponse {
     #[serde(default)]
     sensors: Vec<HelperTemperatureSensor>,
     #[serde(default)]
+    hardware: Vec<String>,
+    #[serde(default)]
+    sensor_inventory: Vec<String>,
+    #[serde(default)]
     error: Option<String>,
 }
 
@@ -260,6 +264,17 @@ impl WindowsSystemProvider {
             match lhm.sample() {
                 Ok(response) => {
                     provider_error = response.error;
+                    if response.sensors.is_empty() && provider_error.is_none() {
+                        let hardware = if response.hardware.is_empty() { "no hardware entries".to_string() } else { response.hardware.join("; ") };
+                        let temperature_like = response.sensor_inventory.iter()
+                            .filter(|line| line.to_ascii_lowercase().contains("temperature"))
+                            .take(6).cloned().collect::<Vec<_>>();
+                        provider_error = Some(if temperature_like.is_empty() {
+                            format!("Detected hardware: {hardware}. No temperature sensor entries were exposed.")
+                        } else {
+                            format!("Detected hardware: {hardware}. Temperature entries: {}", temperature_like.join("; "))
+                        });
+                    }
                     sensors = response.sensors.into_iter()
                         .filter(|s| s.value_c.is_finite() && s.value_c >= -20.0 && s.value_c <= 150.0)
                         .map(|s| TemperatureSensor {
