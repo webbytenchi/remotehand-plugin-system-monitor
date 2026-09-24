@@ -56,7 +56,7 @@ static class Program
 
     static int Main()
     {
-        using var computer = new Computer { IsCpuEnabled = true };
+        var computer = new Computer { IsCpuEnabled = true };
         try
         {
             computer.Open();
