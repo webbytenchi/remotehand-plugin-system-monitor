@@ -528,7 +528,7 @@ fn main()->Result<(),String>{
     }
 
     #[allow(unreachable_code)]
-    { drop(output_tx); let _=writer.join(); Ok(()) }
+    { drop(output_tx); let _=_writer.join(); Ok(()) }
 }
 
 #[cfg(test)]
