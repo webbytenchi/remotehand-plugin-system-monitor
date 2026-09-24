@@ -2,7 +2,7 @@ using System.Text.Json;
 using LibreHardwareMonitor.Hardware;
 
 sealed record TemperatureSensor(string Hardware, string Name, double ValueC);
-sealed record SensorResponse(List<TemperatureSensor> Sensors, string? Error);
+sealed record SensorResponse(List<TemperatureSensor> Sensors, List<string> Hardware, List<string> SensorInventory, string? Error);
 
 sealed class UpdateVisitor : IVisitor
 {
@@ -32,12 +32,30 @@ static class Program
             var sensors = new List<TemperatureSensor>();
             foreach (var hardware in computer.Hardware)
                 Collect(hardware, sensors);
-            return new SensorResponse(sensors, null);
+            var hardwareNames = new List<string>();
+            var inventory = new List<string>();
+            foreach (var hardware in computer.Hardware)
+            {
+                hardwareNames.Add($"{hardware.HardwareType}: {hardware.Name}");
+                CollectInventory(hardware, inventory);
+            }
+            return new SensorResponse(sensors, hardwareNames, inventory, null);
         }
         catch (Exception ex)
         {
-            return new SensorResponse(new List<TemperatureSensor>(), ex.Message);
+            return new SensorResponse(new List<TemperatureSensor>(), new List<string>(), new List<string>(), ex.Message);
         }
+    }
+
+    static void CollectInventory(IHardware hardware, List<string> inventory)
+    {
+        foreach (var sensor in hardware.Sensors)
+        {
+            var value = sensor.Value is null ? "null" : sensor.Value.Value.ToString("0.###");
+            inventory.Add($"{hardware.Name} | {sensor.SensorType} | {sensor.Name} | {value}");
+        }
+        foreach (var subHardware in hardware.SubHardware)
+            CollectInventory(subHardware, inventory);
     }
 
     static void Collect(IHardware hardware, List<TemperatureSensor> sensors)
@@ -63,7 +81,7 @@ static class Program
         }
         catch (Exception ex)
         {
-            Console.WriteLine(JsonSerializer.Serialize(new SensorResponse(new(), ex.Message), JsonOptions));
+            Console.WriteLine(JsonSerializer.Serialize(new SensorResponse(new(), new(), new(), ex.Message), JsonOptions));
             Console.Out.Flush();
             return 2;
         }
