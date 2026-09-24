@@ -271,6 +271,6 @@ The repository exists so the design has a clean home. Implementation should begi
 
 ## Current v0.1 implementation branch
 
-`emma/v0.1-baseline` currently contains the Windows-first CPU, per-core, memory, and temperature sampler; rolling one-hour in-memory history; 5/15/30/60-minute panel views; CSV export; top-bar widgets; configurable tray health tiles; transition-based alerts; native notifications; and Windows alert sound support.
+`emma/v0.1-baseline` currently contains the Windows-first CPU, per-core, and memory sampler; rolling one-hour in-memory history; 5/15/30/60-minute panel views; CSV export; top-bar widgets; configurable tray health tiles; transition-based alerts; native notifications; and Windows alert sound support.
 
-Temperature remains provider-validated: the UI exposes the reported sensor/source label and never fabricates a value when no sensor is available.
+CPU temperature is deliberately deferred beyond v0.1. The v0.1 package is intended to run without requiring .NET, PawnIO, or another separately installed hardware-monitoring dependency.
