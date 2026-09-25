@@ -86,6 +86,20 @@ struct HostResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct AlertDelivery {
+    #[serde(default = "default_true")]
+    sound: bool,
+    #[serde(default = "default_true")]
+    notification: bool,
+    #[serde(default)]
+    sound_file: Option<Value>,
+}
+fn alert_delivery(sound: bool, notification: bool) -> AlertDelivery {
+    AlertDelivery { sound, notification, sound_file: None }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct MetricConfig {
     #[serde(default = "default_true")]
     show_topbar: bool,
@@ -97,6 +111,12 @@ struct MetricConfig {
     notification: bool,
     #[serde(default)]
     sound_file: Option<Value>,
+    #[serde(default)]
+    warning_alert: Option<AlertDelivery>,
+    #[serde(default)]
+    critical_alert: Option<AlertDelivery>,
+    #[serde(default)]
+    recovered_alert: Option<AlertDelivery>,
     healthy_max: f64,
     critical_min: f64,
     healthy_color: String,
@@ -114,6 +134,9 @@ fn metric_config(healthy_max: f64, critical_min: f64) -> MetricConfig {
         sound: true,
         notification: true,
         sound_file: None,
+        warning_alert: Some(alert_delivery(true, true)),
+        critical_alert: Some(alert_delivery(true, true)),
+        recovered_alert: Some(alert_delivery(false, true)),
         healthy_max,
         critical_min,
         healthy_color: "#2f9e62".into(),
@@ -251,6 +274,15 @@ fn health_color(h: Health, cfg: &MetricConfig) -> &str {
     }
 }
 
+fn alert_delivery_for(cfg: &MetricConfig, state: Health) -> AlertDelivery {
+    match state {
+        Health::Warning => cfg.warning_alert.clone().unwrap_or_else(|| AlertDelivery { sound: cfg.sound, notification: cfg.notification, sound_file: cfg.sound_file.clone() }),
+        Health::Critical => cfg.critical_alert.clone().unwrap_or_else(|| AlertDelivery { sound: cfg.sound, notification: cfg.notification, sound_file: cfg.sound_file.clone() }),
+        Health::Healthy => cfg.recovered_alert.clone().unwrap_or_else(|| alert_delivery(false, true)),
+        Health::Unavailable => alert_delivery(false, false),
+    }
+}
+
 fn effective_memory_used_config(config: &Config, total_bytes: u64) -> MetricConfig {
     if let Some(cfg) = &config.memory_used { return cfg.clone(); }
     let mut cfg = config.memory.clone();
@@ -323,7 +355,10 @@ struct AlertTransition {
 }
 impl AlertTransition {
     fn new(metric:&'static str,title:&'static str,value:Option<f64>,from:Health,to:Health,config:MetricConfig)->Self{Self{metric,title,value,from,to,config}}
-    fn actionable(&self)->bool{matches!(self.to,Health::Warning|Health::Critical)}
+    fn actionable(&self)->bool{
+        matches!(self.to,Health::Warning|Health::Critical)
+            || (self.to==Health::Healthy && matches!(self.from,Health::Warning|Health::Critical))
+    }
 }
 
 fn read_frame(reader:&mut impl Read)->Result<Vec<u8>,String>{
@@ -419,15 +454,18 @@ fn status_value(store:&Store)->Value{
 fn emit_alert(output:&mpsc::Sender<Value>,transition:&AlertTransition){
     if !transition.actionable(){return;}
     let state=health_name(transition.to);
+    let delivery=alert_delivery_for(&transition.config,transition.to);
     let value=transition.value.map(|v|if transition.metric=="memoryUsed"{format!("{:.1} GB",v/1073741824.0)}else{format!("{v:.1}")}).unwrap_or_else(||"unavailable".into());
-    let payload=json!({"metric":transition.metric,"title":transition.title,"value":transition.value,"state":state,"from":health_name(transition.from),"sound":transition.config.sound,"soundFile":transition.config.sound_file,"notification":transition.config.notification});
+    let payload=json!({"metric":transition.metric,"title":transition.title,"value":transition.value,"state":state,"from":health_name(transition.from),"sound":delivery.sound,"soundFile":delivery.sound_file,"notification":delivery.notification});
     let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"system.alert",payload});
-    if transition.config.notification{
+    if delivery.notification{
+        let label=match transition.to{Health::Critical=>"Critical",Health::Warning=>"Warning",Health::Healthy=>"Recovered",Health::Unavailable=>"Unavailable"};
+        let tone=match transition.to{Health::Critical=>"danger",Health::Warning=>"warning",Health::Healthy=>"success",Health::Unavailable=>"info"};
         let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"notification.show",payload:json!({
             "itemId":format!("system-monitor-{}",transition.metric),
-            "title":format!("{} · {}",transition.title,if transition.to==Health::Critical{"Critical"}else{"Warning"}),
+            "title":format!("{} · {}",transition.title,label),
             "body":format!("Current value: {value}"),
-            "tone":if transition.to==Health::Critical{"danger"}else{"warning"},
+            "tone":tone,
             "silent":true,
             "action":{"type":"open-panel","panel":"system-monitor","context":{"metric":transition.metric}}
         })});
@@ -519,16 +557,16 @@ fn main()->Result<(),String>{
             }
             "system.alert.test"=>{
                 let metric=request.params.get("metric").and_then(Value::as_str).unwrap_or("cpu");
-                let guard=store.lock().map_err(|_|"state lock poisoned".to_string())?;
-                let memory_used_cfg=guard.history.back().map(|s|effective_memory_used_config(&guard.config,s.memory_total_bytes)).unwrap_or_else(||effective_memory_used_config(&guard.config,0));
-                let cfg=match metric{"memory"=>&guard.config.memory,"memoryUsed"=>&memory_used_cfg,_=>&guard.config.cpu};
-                if cfg.notification{
+                let state_name=request.params.get("state").and_then(Value::as_str).unwrap_or("warning");
+                let notification=request.params.get("notification").and_then(Value::as_bool).unwrap_or(false);
+                let tone=if state_name=="critical"{"danger"}else if state_name=="recovered"{"success"}else{"warning"};
+                if notification{
                     let _=send_outbound(&output_tx,PluginEvent{message_type:"plugin.event",event:"notification.show",payload:json!({
-                        "itemId":format!("system-monitor-{metric}"),"title":"System Monitor · Test","body":format!("{metric} alert test"),"tone":"warning","silent":true,
+                        "itemId":format!("system-monitor-{metric}"),"title":format!("System Monitor · {} test",if state_name=="recovered"{"Recovered"}else if state_name=="critical"{"Critical"}else{"Warning"}),"body":format!("{metric} alert test"),"tone":tone,"silent":true,
                         "action":{"type":"open-panel","panel":"system-monitor","context":{"metric":metric}}
                     })});
                 }
-                PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"tested":metric,"sound":cfg.sound,"soundFile":cfg.sound_file}),error:String::new()}
+                PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"tested":metric,"state":state_name}),error:String::new()}
             }
             _=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error:format!("unknown method: {}",request.method)}
         };
@@ -547,6 +585,8 @@ mod tests{
     #[test] fn transitions_require_two_samples(){let mut t=TransitionTracker::default();assert!(t.observe(Health::Healthy).is_none());assert_eq!(t.observe(Health::Healthy),Some((Health::Unavailable,Health::Healthy)));assert!(t.observe(Health::Critical).is_none());assert_eq!(t.observe(Health::Critical),Some((Health::Healthy,Health::Critical)));}
     #[test] fn config_rejects_overlapping_thresholds(){let mut c=Config::default();c.temperature.healthy_max=95.0;c.temperature.critical_min=90.0;assert!(normalize_config(c).is_err());}
     #[test] fn memory_used_defaults_follow_memory_percent_thresholds(){let c=Config::default();let m=effective_memory_used_config(&c,8*1024*1024*1024);assert_eq!(m.healthy_max,8.0*1024.0*1024.0*1024.0*0.70);assert_eq!(m.critical_min,8.0*1024.0*1024.0*1024.0*0.90);}
+    #[test] fn recovered_transition_is_actionable_but_initial_healthy_is_not(){let c=metric_config(70.0,95.0);assert!(!AlertTransition::new("cpu","CPU",Some(10.0),Health::Unavailable,Health::Healthy,c.clone()).actionable());assert!(AlertTransition::new("cpu","CPU",Some(10.0),Health::Warning,Health::Healthy,c).actionable());}
+    #[test] fn default_recovered_alert_is_quiet_but_notifies(){let c=metric_config(70.0,95.0);let d=alert_delivery_for(&c,Health::Healthy);assert!(!d.sound);assert!(d.notification);}
     #[test] fn topbar_series_colors_each_sample_by_its_own_threshold_state(){
         let cfg=metric_config(60.0,90.0);
         let now=now_ms();
