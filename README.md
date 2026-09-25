@@ -1,12 +1,12 @@
 # RemoteHand System Monitor
 
-Status: **v0.1.0 release candidate**
+Status: **v0.1.1 release candidate**
 
 RemoteHand System Monitor is a Windows-first plugin for local CPU and memory monitoring. It keeps hardware-monitoring semantics inside the plugin while RemoteHand core provides only generic plugin infrastructure.
 
-## v0.1.0 scope
+## v0.1.1 scope
 
-The first release provides:
+The v0.1.1 release provides:
 
 - overall CPU utilization
 - per-logical-core CPU utilization
@@ -14,13 +14,13 @@ The first release provides:
 - 2-second sampling
 - one hour of in-memory history
 - 5 / 15 / 30 / 60 minute history views
-- live CPU and memory graphs
+- selectable Graph / Bar overview visualizations for CPU and memory
 - current / minimum / average / maximum summaries
 - timestamped CSV export
-- optional CPU and memory top-bar widgets
+- optional CPU and memory top-bar widgets with configurable titles, colors, backgrounds, borders, and Graph / Bar visualization
 - optional CPU and memory system-tray tiles
-- configurable warning and critical thresholds and colors
-- transition-based sound and native notification alerts
+- configurable warning and critical thresholds and health colors
+- independent Warning, Critical, and Recovered sound/notification delivery with custom MP3/WAV support and built-in beep fallback
 - two-sample anti-flap confirmation before state transitions
 - plugin-scoped settings persistence
 - tray and notification click-through to the System Monitor panel
@@ -47,11 +47,11 @@ The implementation keeps a provider boundary so Linux support and additional har
 
 ## CPU temperature
 
-CPU temperature is deliberately deferred beyond v0.1.0.
+CPU temperature is deliberately deferred beyond v0.1.1.
 
-The v0.1.0 package does **not** require .NET, PawnIO, LibreHardwareMonitor, another separately installed hardware-monitoring application, or a third-party driver solely for temperature telemetry.
+The v0.1.1 package does **not** require .NET, PawnIO, LibreHardwareMonitor, another separately installed hardware-monitoring application, or a third-party driver solely for temperature telemetry.
 
-Earlier temperature-provider experiments remain available in Git history but are not part of the v0.1.0 source tree or package.
+Earlier temperature-provider experiments remain available in Git history but are not part of the v0.1.1 source tree or package.
 
 ## Architecture rule
 
@@ -63,7 +63,7 @@ Do not add CPU-, GPU-, sensor-, vendor-, or hardware-specific logic to RemoteHan
 
 ## Current non-goals
 
-Not in v0.1.0:
+Not in v0.1.1:
 
 - CPU temperature
 - NVIDIA, Intel, or AMD GPU monitoring
@@ -75,4 +75,4 @@ Not in v0.1.0:
 - persistent telemetry database
 - motherboard-wide sensor-suite replacement
 
-See `V0.1.0-DESIGN.md` for the accepted v0.1.0 design and acceptance criteria.
+See `V0.1.0-DESIGN.md` for the original baseline design. v0.1.1 is a polish release on top of that baseline.
