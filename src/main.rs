@@ -183,28 +183,28 @@ struct GpuConfig {
     shared_memory: MetricConfig,
     temperature: MetricConfig,
 }
-fn gpu_config(index:u32)->GpuConfig{
+fn gpu_config(index:u32,name:&str)->GpuConfig{
     let mut utilization=metric_config(70.0,95.0);
     utilization.overview_visualization=Some("graph".into());
     utilization.topbar_visualization=Some("graph".into());
-    utilization.topbar_title=Some(format!("GPU {index}"));
+    utilization.topbar_title=Some(name.to_string());
 
     let mut dedicated_memory=metric_config(80.0,95.0);
     dedicated_memory.overview_visualization=Some("bar".into());
     dedicated_memory.topbar_visualization=Some("bar".into());
-    dedicated_memory.topbar_title=Some(format!("GPU {index} VRAM"));
+    dedicated_memory.topbar_title=Some(format!("{name} VRAM"));
     dedicated_memory.show_topbar=false;
 
     let mut shared_memory=metric_config(80.0,95.0);
     shared_memory.overview_visualization=Some("bar".into());
     shared_memory.topbar_visualization=Some("bar".into());
-    shared_memory.topbar_title=Some(format!("GPU {index} Shared"));
+    shared_memory.topbar_title=Some(format!("{name} Shared"));
     shared_memory.show_topbar=false;
 
     let mut temperature=metric_config(70.0,90.0);
     temperature.overview_visualization=Some("graph".into());
     temperature.topbar_visualization=Some("graph".into());
-    temperature.topbar_title=Some(format!("GPU {index} Temp"));
+    temperature.topbar_title=Some(format!("{name} Temp"));
     temperature.show_topbar=false;
 
     GpuConfig{utilization,dedicated_memory,shared_memory,temperature}
@@ -445,7 +445,7 @@ impl Store {
 
         let mut out=Vec::new();
         for gpu in gpus {
-            let cfg=self.config.gpus.entry(gpu.luid.clone()).or_insert_with(||gpu_config(gpu.index)).clone();
+            let cfg=self.config.gpus.entry(gpu.luid.clone()).or_insert_with(||gpu_config(gpu.index,&gpu.name)).clone();
             let dedicated_percent=percent(gpu.dedicated_used_bytes,gpu.dedicated_total_bytes);
             let shared_percent=percent(gpu.shared_used_bytes,gpu.shared_total_bytes);
             for (kind,title,value,metric_cfg) in [
@@ -591,12 +591,12 @@ fn surfaces(store:&Store)->(Value,Value){
 
     for gpu in &store.gpu_latest {
         let Some(cfg)=store.config.gpus.get(&gpu.luid) else {continue};
-        let metrics=[
+        let mut metrics=vec![
             ("utilization","%",gpu.utilization_percent,&cfg.utilization,"graph"),
             ("dedicatedMemory","%",percent(gpu.dedicated_used_bytes,gpu.dedicated_total_bytes),&cfg.dedicated_memory,"bar"),
             ("sharedMemory","%",percent(gpu.shared_used_bytes,gpu.shared_total_bytes),&cfg.shared_memory,"bar"),
-            ("temperature","°C",gpu.temperature_c,&cfg.temperature,"graph"),
         ];
+        if gpu.temperature_c.is_some(){metrics.push(("temperature","°C",gpu.temperature_c,&cfg.temperature,"graph"));}
         for (kind,unit,value,metric_cfg,default_visual) in metrics {
             let h=health(value,metric_cfg);
             let id=format!("gpu{}-{}",gpu.index,kind);
@@ -732,7 +732,15 @@ fn main()->Result<(),String>{
                 guard.gpu_discovery_state="ready".into();
                 guard.gpu_discovery_error=None;
                 for adapter in &adapters{
-                    guard.config.gpus.entry(adapter.luid.clone()).or_insert_with(||gpu_config(adapter.index));
+                    let cfg=guard.config.gpus.entry(adapter.luid.clone()).or_insert_with(||gpu_config(adapter.index,&adapter.name));
+                    let old_util=format!("GPU {}",adapter.index);
+                    let old_vram=format!("GPU {} VRAM",adapter.index);
+                    let old_shared=format!("GPU {} Shared",adapter.index);
+                    let old_temp=format!("GPU {} Temp",adapter.index);
+                    if cfg.utilization.topbar_title.as_deref()==Some(old_util.as_str()){cfg.utilization.topbar_title=Some(adapter.name.clone());}
+                    if cfg.dedicated_memory.topbar_title.as_deref()==Some(old_vram.as_str()){cfg.dedicated_memory.topbar_title=Some(format!("{} VRAM",adapter.name));}
+                    if cfg.shared_memory.topbar_title.as_deref()==Some(old_shared.as_str()){cfg.shared_memory.topbar_title=Some(format!("{} Shared",adapter.name));}
+                    if cfg.temperature.topbar_title.as_deref()==Some(old_temp.as_str()){cfg.temperature.topbar_title=Some(format!("{} Temp",adapter.name));}
                 }
             }
             let _=send_outbound(&gpu_output,PluginEvent{
@@ -851,13 +859,14 @@ mod tests{
     #[test] fn default_recovered_alert_sounds_without_notification(){let c=metric_config(70.0,95.0);let d=alert_delivery_for(&c,Health::Healthy);assert!(d.sound);assert!(!d.notification);}
     #[test] fn visualization_defaults_match_metric_behavior(){let c=Config::default();assert_eq!(c.cpu.overview_visualization.as_deref(),Some("graph"));assert_eq!(c.cpu.topbar_visualization.as_deref(),Some("graph"));assert_eq!(c.memory.overview_visualization.as_deref(),Some("bar"));assert_eq!(c.memory.topbar_visualization.as_deref(),Some("bar"));}
     #[test] fn gpu_defaults_are_per_adapter_and_optional_temperature(){
-        let g=gpu_config(2);
-        assert_eq!(g.utilization.topbar_title.as_deref(),Some("GPU 2"));
+        let g=gpu_config(2,"Example GPU");
+        assert_eq!(g.utilization.topbar_title.as_deref(),Some("Example GPU"));
         assert!(g.utilization.show_topbar);
         assert!(!g.dedicated_memory.show_topbar);
         assert!(!g.shared_memory.show_topbar);
         assert!(!g.temperature.show_topbar);
         assert_eq!(g.dedicated_memory.overview_visualization.as_deref(),Some("bar"));
+        assert_eq!(g.dedicated_memory.topbar_title.as_deref(),Some("Example GPU VRAM"));
         assert_eq!(g.temperature.overview_visualization.as_deref(),Some("graph"));
     }
     #[test] fn gpu_memory_percent_requires_capacity(){
