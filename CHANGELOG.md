@@ -1,8 +1,8 @@
 # Changelog
 
-## v0.2.0-rc.1
+## v0.2.0
 
-Release candidate for the first GPU-enabled System Monitor release.
+First GPU-enabled System Monitor release.
 
 ### Added
 - Native Windows GPU discovery through DXGI with hardware-adapter filtering.
