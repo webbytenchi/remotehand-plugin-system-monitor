@@ -693,39 +693,57 @@ fn main()->Result<(),String>{
     let store=Arc::new(Mutex::new(Store::new()));
     store.lock().map_err(|_|"state lock poisoned".to_string())?.config=config;
 
-    // GPU discovery is intentionally off the startup/handshake path. RemoteHand and the
-    // CPU/memory sampler can become ready while DXGI enumeration completes independently.
+    // GPU discovery/telemetry stays entirely off the startup/handshake path.
     {
         let gpu_store=Arc::clone(&store);
         let gpu_output=output_tx.clone();
         thread::spawn(move||{
-            let result=gpu_windows::enumerate_gpus();
-            let payload=if let Ok(mut guard)=gpu_store.lock(){
-                match result{
-                    Ok(adapters)=>{
-                        guard.gpu_adapters=adapters;
-                        guard.gpu_discovery_state="ready".into();
-                        guard.gpu_discovery_error=None;
-                    }
-                    Err(error)=>{
-                        guard.gpu_adapters.clear();
+            let adapters=match gpu_windows::enumerate_gpus(){
+                Ok(adapters)=>adapters,
+                Err(error)=>{
+                    if let Ok(mut guard)=gpu_store.lock(){
                         guard.gpu_discovery_state="error".into();
-                        guard.gpu_discovery_error=Some(error);
+                        guard.gpu_discovery_error=Some(error.clone());
                     }
+                    let _=send_outbound(&gpu_output,PluginEvent{message_type:"plugin.event",event:"system.gpu.discovered",payload:json!({"state":"error","error":error,"adapters":[]})});
+                    return;
                 }
-                json!({
-                    "state":guard.gpu_discovery_state,
-                    "error":guard.gpu_discovery_error,
-                    "adapters":guard.gpu_adapters
-                })
-            }else{
-                json!({"state":"error","error":"state lock poisoned","adapters":[]})
             };
+
+            if let Ok(mut guard)=gpu_store.lock(){
+                guard.gpu_adapters=adapters.clone();
+                guard.gpu_discovery_state="ready".into();
+                guard.gpu_discovery_error=None;
+                for adapter in &adapters{
+                    guard.config.gpus.entry(adapter.luid.clone()).or_insert_with(||gpu_config(adapter.index));
+                }
+            }
             let _=send_outbound(&gpu_output,PluginEvent{
                 message_type:"plugin.event",
                 event:"system.gpu.discovered",
-                payload
+                payload:json!({"state":"ready","error":null,"adapters":adapters})
             });
+
+            if adapters.is_empty(){return;}
+            let sampler=GpuSampler::new(adapters);
+            GpuSampler::prime_delay();
+            loop{
+                let telemetry=sampler.sample();
+                let transitions={
+                    let mut guard=match gpu_store.lock(){Ok(g)=>g,Err(_)=>return};
+                    let transitions=guard.record_gpu(telemetry.clone());
+                    let _=emit_surfaces(&gpu_output,&guard);
+                    transitions
+                };
+                let _=send_outbound(&gpu_output,PluginEvent{
+                    message_type:"plugin.event",
+                    event:"system.gpu.sampled",
+                    payload:json!({"timestamp":now_ms(),"gpus":telemetry})
+                });
+                for t in transitions{emit_alert(&gpu_output,&t);}
+                let seconds=match gpu_store.lock(){Ok(g)=>g.config.sample_seconds,Err(_)=>return};
+                thread::sleep(Duration::from_secs(seconds));
+            }
         });
     }
 
