@@ -1,11 +1,14 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::{self, Read, Write};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use sysinfo::System;
+
+mod gpu_windows;
+use gpu_windows::{GpuAdapterInfo, GpuSampler, GpuTelemetry};
 
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const STORAGE_KEY: &str = "config-v1";
@@ -174,12 +177,49 @@ fn metric_config(healthy_max: f64, critical_min: f64) -> MetricConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct GpuConfig {
+    utilization: MetricConfig,
+    dedicated_memory: MetricConfig,
+    shared_memory: MetricConfig,
+    temperature: MetricConfig,
+}
+fn gpu_config(_index:u32,name:&str)->GpuConfig{
+    let mut utilization=metric_config(70.0,95.0);
+    utilization.overview_visualization=Some("graph".into());
+    utilization.topbar_visualization=Some("graph".into());
+    utilization.topbar_title=Some(name.to_string());
+
+    let mut dedicated_memory=metric_config(80.0,95.0);
+    dedicated_memory.overview_visualization=Some("bar".into());
+    dedicated_memory.topbar_visualization=Some("bar".into());
+    dedicated_memory.topbar_title=Some(format!("{name} VRAM"));
+    dedicated_memory.show_topbar=false;
+
+    let mut shared_memory=metric_config(80.0,95.0);
+    shared_memory.overview_visualization=Some("bar".into());
+    shared_memory.topbar_visualization=Some("bar".into());
+    shared_memory.topbar_title=Some(format!("{name} Shared"));
+    shared_memory.show_topbar=false;
+
+    let mut temperature=metric_config(70.0,90.0);
+    temperature.overview_visualization=Some("graph".into());
+    temperature.topbar_visualization=Some("graph".into());
+    temperature.topbar_title=Some(format!("{name} Temp"));
+    temperature.show_topbar=false;
+
+    GpuConfig{utilization,dedicated_memory,shared_memory,temperature}
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Config {
     sample_seconds: u64,
     default_window_minutes: u64,
     cpu: MetricConfig,
     temperature: MetricConfig,
     memory: MetricConfig,
+    #[serde(default)]
+    gpus: BTreeMap<String,GpuConfig>,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -201,6 +241,7 @@ impl Default for Config {
                 m.topbar_title=Some("Memory".into());
                 m
             },
+            gpus:BTreeMap::new(),
         }
     }
 }
@@ -210,6 +251,18 @@ fn normalize_config(mut c: Config) -> Result<Config, String> {
     for (name, m) in [("CPU",&c.cpu),("Temperature",&c.temperature),("Memory",&c.memory)] {
         if !m.healthy_max.is_finite() || !m.critical_min.is_finite() || m.healthy_max >= m.critical_min {
             return Err(format!("{name} thresholds must be finite and healthy < critical"));
+        }
+    }
+    for (luid,gpu) in &c.gpus {
+        for (name,m) in [
+            ("utilization",&gpu.utilization),
+            ("dedicated memory",&gpu.dedicated_memory),
+            ("shared memory",&gpu.shared_memory),
+            ("temperature",&gpu.temperature),
+        ] {
+            if !m.healthy_max.is_finite() || !m.critical_min.is_finite() || m.healthy_max >= m.critical_min {
+                return Err(format!("GPU {luid} {name} thresholds must be finite and healthy < critical"));
+            }
         }
     }
     Ok(c)
@@ -284,6 +337,7 @@ impl WindowsSystemProvider {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Health { Healthy, Warning, Critical, Unavailable }
+fn percent(used:Option<u64>,total:u64)->Option<f64>{used.filter(|_|total>0).map(|u|(u as f64/total as f64)*100.0)}
 fn health(value: Option<f64>, cfg: &MetricConfig) -> Health {
     let Some(v)=value.filter(|v|v.is_finite()) else { return Health::Unavailable; };
     if v >= cfg.critical_min { Health::Critical }
@@ -332,16 +386,41 @@ impl TransitionTracker {
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GpuSnapshot {
+    timestamp: u64,
+    gpus: Vec<GpuTelemetry>,
+}
+
 struct Store {
     config: Config,
     history: VecDeque<Sample>,
+    gpu_history: VecDeque<GpuSnapshot>,
+    gpu_latest: Vec<GpuTelemetry>,
+    gpu_adapters: Vec<GpuAdapterInfo>,
+    gpu_discovery_state: String,
+    gpu_discovery_error: Option<String>,
     cpu_tracker: TransitionTracker,
     temp_tracker: TransitionTracker,
     memory_tracker: TransitionTracker,
+    gpu_trackers: BTreeMap<String,TransitionTracker>,
 }
 impl Store {
     fn new() -> Self {
-        Self { config: Config::default(), history: VecDeque::new(), cpu_tracker:Default::default(), temp_tracker:Default::default(), memory_tracker:Default::default() }
+        Self {
+            config: Config::default(),
+            history: VecDeque::new(),
+            gpu_history: VecDeque::new(),
+            gpu_latest: Vec::new(),
+            gpu_adapters: Vec::new(),
+            gpu_discovery_state: "pending".into(),
+            gpu_discovery_error: None,
+            cpu_tracker: Default::default(),
+            temp_tracker: Default::default(),
+            memory_tracker: Default::default(),
+            gpu_trackers: BTreeMap::new(),
+        }
     }
     fn record(&mut self, sample: Sample) -> Vec<AlertTransition> {
         self.history.push_back(sample.clone());
@@ -356,19 +435,48 @@ impl Store {
         if let Some((from,to))=self.memory_tracker.observe(mem){ out.push(AlertTransition::new("memory","Memory utilization",Some(sample.memory_percent),from,to,self.config.memory.clone())); }
         out
     }
+
+    fn record_gpu(&mut self, gpus:Vec<GpuTelemetry>)->Vec<AlertTransition>{
+        let timestamp=now_ms();
+        self.gpu_latest=gpus.clone();
+        self.gpu_history.push_back(GpuSnapshot{timestamp,gpus:gpus.clone()});
+        let cutoff=timestamp.saturating_sub(MAX_HISTORY_SECONDS*1000);
+        while self.gpu_history.front().is_some_and(|s|s.timestamp<cutoff){self.gpu_history.pop_front();}
+
+        let mut out=Vec::new();
+        for gpu in gpus {
+            let cfg=self.config.gpus.entry(gpu.luid.clone()).or_insert_with(||gpu_config(gpu.index,&gpu.name)).clone();
+            let dedicated_percent=percent(gpu.dedicated_used_bytes,gpu.dedicated_total_bytes);
+            let shared_percent=percent(gpu.shared_used_bytes,gpu.shared_total_bytes);
+            for (kind,title,value,metric_cfg) in [
+                ("utilization",format!("GPU {} utilization",gpu.index),gpu.utilization_percent,cfg.utilization),
+                ("dedicatedMemory",format!("GPU {} dedicated memory",gpu.index),dedicated_percent,cfg.dedicated_memory),
+                ("sharedMemory",format!("GPU {} shared memory",gpu.index),shared_percent,cfg.shared_memory),
+                ("temperature",format!("GPU {} temperature",gpu.index),gpu.temperature_c,cfg.temperature),
+            ] {
+                let h=health(value,&metric_cfg);
+                let key=format!("{}:{kind}",gpu.luid);
+                let tracker=self.gpu_trackers.entry(key.clone()).or_default();
+                if let Some((from,to))=tracker.observe(h){
+                    out.push(AlertTransition::new(format!("gpu:{key}"),title,value,from,to,metric_cfg));
+                }
+            }
+        }
+        out
+    }
 }
 
 #[derive(Clone)]
 struct AlertTransition {
-    metric: &'static str,
-    title: &'static str,
+    metric: String,
+    title: String,
     value: Option<f64>,
     from: Health,
     to: Health,
     config: MetricConfig,
 }
 impl AlertTransition {
-    fn new(metric:&'static str,title:&'static str,value:Option<f64>,from:Health,to:Health,config:MetricConfig)->Self{Self{metric,title,value,from,to,config}}
+    fn new(metric:impl Into<String>,title:impl Into<String>,value:Option<f64>,from:Health,to:Health,config:MetricConfig)->Self{Self{metric:metric.into(),title:title.into(),value,from,to,config}}
     fn actionable(&self)->bool{
         matches!(self.to,Health::Warning|Health::Critical)
             || (self.to==Health::Healthy && matches!(self.from,Health::Warning|Health::Critical))
@@ -420,6 +528,24 @@ fn recent_series(history:&VecDeque<Sample>,selector:fn(&Sample)->Option<f64>,sec
         })
     }).collect()
 }
+fn gpu_value(gpu:&GpuTelemetry,kind:&str)->Option<f64>{
+    match kind{
+        "utilization"=>gpu.utilization_percent,
+        "dedicatedMemory"=>percent(gpu.dedicated_used_bytes,gpu.dedicated_total_bytes),
+        "sharedMemory"=>percent(gpu.shared_used_bytes,gpu.shared_total_bytes),
+        "temperature"=>gpu.temperature_c,
+        _=>None,
+    }
+}
+fn recent_gpu_series(history:&VecDeque<GpuSnapshot>,luid:&str,kind:&str,seconds:u64,cfg:&MetricConfig)->Vec<Value>{
+    let cutoff=now_ms().saturating_sub(seconds*1000);
+    history.iter().filter(|s|s.timestamp>=cutoff).filter_map(|s|{
+        let gpu=s.gpus.iter().find(|g|g.luid==luid)?;
+        let v=gpu_value(gpu,kind)?;
+        let h=health(Some(v),cfg);
+        Some(json!({"value":v,"tone":health_name(h),"color":health_color(h,cfg)}))
+    }).collect()
+}
 fn metric_topbar(id:&str,default_title:&str,value:Option<f64>,unit:&str,progress_percent:Option<f64>,series:Vec<Value>,h:Health,cfg:&MetricConfig,default_visualization:&str)->Value{
     let shown=value.map(|v|format!("{:.0}{unit}",v)).unwrap_or_else(||"—".into());
     let title=cfg.topbar_title.as_deref().filter(|v|!v.trim().is_empty()).unwrap_or(default_title);
@@ -456,12 +582,36 @@ fn surfaces(store:&Store)->(Value,Value){
     let mem_value=latest.map(|s|s.memory_percent);
     let cpu_h=health(cpu_value,&store.config.cpu);let mem_h=health(mem_value,&store.config.memory);
     let mut top=Vec::new();
-    if store.config.cpu.show_topbar{top.push(metric_topbar("cpu","CPU",cpu_value,"%",cpu_value,recent_series(&store.history,|s|Some(s.cpu_percent),60,&store.config.cpu),cpu_h,&store.config.cpu,"graph"));}
-    if store.config.memory.show_topbar{top.push(metric_topbar("memory","Memory",mem_value,"%",mem_value,recent_series(&store.history,|s|Some(s.memory_percent),60,&store.config.memory),mem_h,&store.config.memory,"bar"));}
-    let tray=vec![
+    let mut tray=vec![
         tray_item("cpu","CPU utilization",cpu_value,"%",cpu_h,&store.config.cpu),
         tray_item("memory","Memory utilization",mem_value,"%",mem_h,&store.config.memory),
     ];
+    if store.config.cpu.show_topbar{top.push(metric_topbar("cpu","CPU",cpu_value,"%",cpu_value,recent_series(&store.history,|s|Some(s.cpu_percent),60,&store.config.cpu),cpu_h,&store.config.cpu,"graph"));}
+    if store.config.memory.show_topbar{top.push(metric_topbar("memory","Memory",mem_value,"%",mem_value,recent_series(&store.history,|s|Some(s.memory_percent),60,&store.config.memory),mem_h,&store.config.memory,"bar"));}
+
+    for gpu in &store.gpu_latest {
+        let Some(cfg)=store.config.gpus.get(&gpu.luid) else {continue};
+        let mut metrics=vec![
+            ("utilization","%",gpu.utilization_percent,&cfg.utilization,"graph"),
+            ("dedicatedMemory","%",percent(gpu.dedicated_used_bytes,gpu.dedicated_total_bytes),&cfg.dedicated_memory,"bar"),
+            ("sharedMemory","%",percent(gpu.shared_used_bytes,gpu.shared_total_bytes),&cfg.shared_memory,"bar"),
+        ];
+        if gpu.temperature_c.is_some(){metrics.push(("temperature","°C",gpu.temperature_c,&cfg.temperature,"graph"));}
+        for (kind,unit,value,metric_cfg,default_visual) in metrics {
+            let h=health(value,metric_cfg);
+            let id=format!("gpu{}-{}",gpu.index,kind);
+            let default_title=match kind{
+                "utilization"=>format!("GPU {}",gpu.index),
+                "dedicatedMemory"=>format!("GPU {} VRAM",gpu.index),
+                "sharedMemory"=>format!("GPU {} Shared",gpu.index),
+                _=>format!("GPU {} Temp",gpu.index),
+            };
+            if metric_cfg.show_topbar{
+                top.push(metric_topbar(&id,&default_title,value,unit,value,recent_gpu_series(&store.gpu_history,&gpu.luid,kind,60,metric_cfg),h,metric_cfg,default_visual));
+            }
+            tray.push(tray_item(&id,&default_title,value,unit,h,metric_cfg));
+        }
+    }
     (json!({"items":top}),json!({"items":tray}))
 }
 fn tray_item(id:&str,title:&str,value:Option<f64>,unit:&str,h:Health,cfg:&MetricConfig)->Value{
@@ -480,7 +630,18 @@ fn emit_surfaces(output:&mpsc::Sender<Value>,store:&Store)->Result<(),String>{
     send_outbound(output,PluginEvent{message_type:"plugin.event",event:"tray.update",payload:tray})
 }
 fn status_value(store:&Store)->Value{
-    json!({"config":&store.config,"latest":store.history.back(),"history":&store.history})
+    json!({
+        "config":&store.config,
+        "latest":store.history.back(),
+        "history":&store.history,
+        "gpu":{
+            "state":store.gpu_discovery_state,
+            "error":store.gpu_discovery_error,
+            "adapters":store.gpu_adapters,
+            "latest":store.gpu_latest,
+            "history":store.gpu_history
+        }
+    })
 }
 fn emit_alert(output:&mpsc::Sender<Value>,transition:&AlertTransition){
     if !transition.actionable(){return;}
@@ -502,15 +663,32 @@ fn emit_alert(output:&mpsc::Sender<Value>,transition:&AlertTransition){
         })});
     }
 }
-fn csv_for(history:&VecDeque<Sample>,minutes:u64)->String{
+fn csv_for(history:&VecDeque<Sample>,gpu_history:&VecDeque<GpuSnapshot>,minutes:u64)->String{
     let cutoff=now_ms().saturating_sub(minutes.clamp(1,60)*60*1000);
     let max_cores=history.iter().map(|s|s.core_percent.len()).max().unwrap_or(0);
+    let adapters:Vec<GpuTelemetry>=gpu_history.back().map(|s|s.gpus.clone()).unwrap_or_default();
     let mut out=String::from("timestamp_ms,cpu_percent,memory_percent,memory_used_bytes,memory_available_bytes,memory_total_bytes");
-    for i in 0..max_cores{out.push_str(&format!(",core_{i}_percent"));}out.push('\n');
+    for i in 0..max_cores{out.push_str(&format!(",core_{i}_percent"));}
+    for gpu in &adapters{
+        out.push_str(&format!(",gpu_{}_utilization_percent,gpu_{}_dedicated_used_bytes,gpu_{}_shared_used_bytes,gpu_{}_temperature_c",gpu.index,gpu.index,gpu.index,gpu.index));
+    }
+    out.push('\n');
     for s in history.iter().filter(|s|s.timestamp>=cutoff){
         out.push_str(&format!("{},{:.2},",s.timestamp,s.cpu_percent));
         out.push_str(&format!("{:.2},{},{},{}",s.memory_percent,s.memory_used_bytes,s.memory_available_bytes,s.memory_total_bytes));
         for i in 0..max_cores{out.push(',');if let Some(v)=s.core_percent.get(i){out.push_str(&format!("{v:.2}"));}}
+        let gpu_sample=gpu_history.iter().rev().find(|g|g.timestamp<=s.timestamp);
+        for adapter in &adapters{
+            let gpu=gpu_sample.and_then(|g|g.gpus.iter().find(|x|x.luid==adapter.luid));
+            out.push(',');
+            if let Some(v)=gpu.and_then(|g|g.utilization_percent){out.push_str(&format!("{v:.2}"));}
+            out.push(',');
+            if let Some(v)=gpu.and_then(|g|g.dedicated_used_bytes){out.push_str(&v.to_string());}
+            out.push(',');
+            if let Some(v)=gpu.and_then(|g|g.shared_used_bytes){out.push_str(&v.to_string());}
+            out.push(',');
+            if let Some(v)=gpu.and_then(|g|g.temperature_c){out.push_str(&format!("{v:.1}"));}
+        }
         out.push('\n');
     }
     out
@@ -531,6 +709,68 @@ fn main()->Result<(),String>{
     let config=load_config(&mut input,&output_tx,&mut host_request_id).unwrap_or_default();
     let store=Arc::new(Mutex::new(Store::new()));
     store.lock().map_err(|_|"state lock poisoned".to_string())?.config=config;
+
+    // GPU discovery/telemetry stays entirely off the startup/handshake path.
+    {
+        let gpu_store=Arc::clone(&store);
+        let gpu_output=output_tx.clone();
+        thread::spawn(move||{
+            let adapters=match gpu_windows::enumerate_gpus(){
+                Ok(adapters)=>adapters,
+                Err(error)=>{
+                    if let Ok(mut guard)=gpu_store.lock(){
+                        guard.gpu_discovery_state="error".into();
+                        guard.gpu_discovery_error=Some(error.clone());
+                    }
+                    let _=send_outbound(&gpu_output,PluginEvent{message_type:"plugin.event",event:"system.gpu.discovered",payload:json!({"state":"error","error":error,"adapters":[]})});
+                    return;
+                }
+            };
+
+            if let Ok(mut guard)=gpu_store.lock(){
+                guard.gpu_adapters=adapters.clone();
+                guard.gpu_discovery_state="ready".into();
+                guard.gpu_discovery_error=None;
+                for adapter in &adapters{
+                    let cfg=guard.config.gpus.entry(adapter.luid.clone()).or_insert_with(||gpu_config(adapter.index,&adapter.name));
+                    let old_util=format!("GPU {}",adapter.index);
+                    let old_vram=format!("GPU {} VRAM",adapter.index);
+                    let old_shared=format!("GPU {} Shared",adapter.index);
+                    let old_temp=format!("GPU {} Temp",adapter.index);
+                    if cfg.utilization.topbar_title.as_deref()==Some(old_util.as_str()){cfg.utilization.topbar_title=Some(adapter.name.clone());}
+                    if cfg.dedicated_memory.topbar_title.as_deref()==Some(old_vram.as_str()){cfg.dedicated_memory.topbar_title=Some(format!("{} VRAM",adapter.name));}
+                    if cfg.shared_memory.topbar_title.as_deref()==Some(old_shared.as_str()){cfg.shared_memory.topbar_title=Some(format!("{} Shared",adapter.name));}
+                    if cfg.temperature.topbar_title.as_deref()==Some(old_temp.as_str()){cfg.temperature.topbar_title=Some(format!("{} Temp",adapter.name));}
+                }
+            }
+            let _=send_outbound(&gpu_output,PluginEvent{
+                message_type:"plugin.event",
+                event:"system.gpu.discovered",
+                payload:json!({"state":"ready","error":null,"adapters":adapters})
+            });
+
+            if adapters.is_empty(){return;}
+            let sampler=GpuSampler::new(adapters);
+            GpuSampler::prime_delay();
+            loop{
+                let telemetry=sampler.sample();
+                let transitions={
+                    let mut guard=match gpu_store.lock(){Ok(g)=>g,Err(_)=>return};
+                    let transitions=guard.record_gpu(telemetry.clone());
+                    let _=emit_surfaces(&gpu_output,&guard);
+                    transitions
+                };
+                let _=send_outbound(&gpu_output,PluginEvent{
+                    message_type:"plugin.event",
+                    event:"system.gpu.sampled",
+                    payload:json!({"timestamp":now_ms(),"gpus":telemetry})
+                });
+                for t in transitions{emit_alert(&gpu_output,&t);}
+                let seconds=match gpu_store.lock(){Ok(g)=>g.config.sample_seconds,Err(_)=>return};
+                thread::sleep(Duration::from_secs(seconds));
+            }
+        });
+    }
 
     {
         let sampler_store=Arc::clone(&store);let sampler_output=output_tx.clone();
@@ -580,7 +820,7 @@ fn main()->Result<(),String>{
             "system.export.csv"=>{
                 let minutes=request.params.get("minutes").and_then(Value::as_u64).unwrap_or(15).clamp(1,60);
                 let suggested_name=request.params.get("suggestedName").and_then(Value::as_str).filter(|name| !name.trim().is_empty()).unwrap_or("system-monitor-history.csv");
-                let csv={let guard=store.lock().map_err(|_|"state lock poisoned".to_string())?;csv_for(&guard.history,minutes)};
+                let csv={let guard=store.lock().map_err(|_|"state lock poisoned".to_string())?;csv_for(&guard.history,&guard.gpu_history,minutes)};
                 match host_request(&mut input,&output_tx,&mut host_request_id,"file.save",json!({"suggestedName":suggested_name,"content":csv,"filters":[{"name":"CSV","extensions":["csv"]}]})){
                     Ok(result)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result,error:String::new()},
                     Err(error)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error}
@@ -618,6 +858,22 @@ mod tests{
     #[test] fn recovered_transition_is_actionable_but_initial_healthy_is_not(){let c=metric_config(70.0,95.0);assert!(!AlertTransition::new("cpu","CPU",Some(10.0),Health::Unavailable,Health::Healthy,c.clone()).actionable());assert!(AlertTransition::new("cpu","CPU",Some(10.0),Health::Warning,Health::Healthy,c).actionable());}
     #[test] fn default_recovered_alert_sounds_without_notification(){let c=metric_config(70.0,95.0);let d=alert_delivery_for(&c,Health::Healthy);assert!(d.sound);assert!(!d.notification);}
     #[test] fn visualization_defaults_match_metric_behavior(){let c=Config::default();assert_eq!(c.cpu.overview_visualization.as_deref(),Some("graph"));assert_eq!(c.cpu.topbar_visualization.as_deref(),Some("graph"));assert_eq!(c.memory.overview_visualization.as_deref(),Some("bar"));assert_eq!(c.memory.topbar_visualization.as_deref(),Some("bar"));}
+    #[test] fn gpu_defaults_are_per_adapter_and_optional_temperature(){
+        let g=gpu_config(2,"Example GPU");
+        assert_eq!(g.utilization.topbar_title.as_deref(),Some("Example GPU"));
+        assert!(g.utilization.show_topbar);
+        assert!(!g.dedicated_memory.show_topbar);
+        assert!(!g.shared_memory.show_topbar);
+        assert!(!g.temperature.show_topbar);
+        assert_eq!(g.dedicated_memory.overview_visualization.as_deref(),Some("bar"));
+        assert_eq!(g.dedicated_memory.topbar_title.as_deref(),Some("Example GPU VRAM"));
+        assert_eq!(g.temperature.overview_visualization.as_deref(),Some("graph"));
+    }
+    #[test] fn gpu_memory_percent_requires_capacity(){
+        assert_eq!(percent(Some(4),8),Some(50.0));
+        assert_eq!(percent(Some(4),0),None);
+        assert_eq!(percent(None,8),None);
+    }
     #[test] fn topbar_series_colors_each_sample_by_its_own_threshold_state(){
         let cfg=metric_config(60.0,90.0);
         let now=now_ms();

@@ -7,6 +7,7 @@ $stageExe = Join-Path $stageDir "remotehand-system-monitor.exe"
 $packageDir = Join-Path $repo "dist\remotehand-system-monitor-windows-x86_64"
 $packageBinDir = Join-Path $packageDir "bin\windows-x86_64"
 $packageUiDir = Join-Path $packageDir "ui"
+$pluginVersion = (Get-Content (Join-Path $repo "plugin.json") -Raw | ConvertFrom-Json).version
 
 Write-Host "Building RemoteHand System Monitor (release)..."
 Push-Location $repo
@@ -46,7 +47,7 @@ Write-Host "  Size: $packageMiB MiB"
 
 
 # Create a portable validation ZIP beside the installable folder.
-$zipPath = Join-Path $repo "dist\remotehand-system-monitor-v0.1.1-test-windows-x86_64.zip"
+$zipPath = Join-Path $repo ("dist\remotehand-system-monitor-v{0}-windows-x86_64.zip" -f $pluginVersion)
 if (Test-Path $zipPath) {
     Remove-Item -Force $zipPath
 }
