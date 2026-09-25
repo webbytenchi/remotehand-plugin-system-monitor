@@ -117,6 +117,10 @@ struct MetricConfig {
     critical_alert: Option<AlertDelivery>,
     #[serde(default)]
     recovered_alert: Option<AlertDelivery>,
+    #[serde(default)]
+    overview_visualization: Option<String>,
+    #[serde(default)]
+    topbar_visualization: Option<String>,
     healthy_max: f64,
     critical_min: f64,
     healthy_color: String,
@@ -137,6 +141,8 @@ fn metric_config(healthy_max: f64, critical_min: f64) -> MetricConfig {
         warning_alert: Some(alert_delivery(true, true)),
         critical_alert: Some(alert_delivery(true, true)),
         recovered_alert: Some(alert_delivery(true, false)),
+        overview_visualization: None,
+        topbar_visualization: None,
         healthy_max,
         critical_min,
         healthy_color: "#2f9e62".into(),
@@ -164,9 +170,19 @@ impl Default for Config {
         Self {
             sample_seconds: DEFAULT_SAMPLE_SECONDS,
             default_window_minutes: 15,
-            cpu: metric_config(70.0, 95.0),
+            cpu: {
+                let mut m=metric_config(70.0,95.0);
+                m.overview_visualization=Some("graph".into());
+                m.topbar_visualization=Some("graph".into());
+                m
+            },
             temperature: metric_config(60.0, 90.0),
-            memory: metric_config(70.0, 90.0),
+            memory: {
+                let mut m=metric_config(70.0,90.0);
+                m.overview_visualization=Some("bar".into());
+                m.topbar_visualization=Some("bar".into());
+                m
+            },
             memory_used: None,
         }
     }
@@ -290,6 +306,8 @@ fn effective_memory_used_config(config: &Config, total_bytes: u64) -> MetricConf
     cfg.show_tray = false;
     cfg.healthy_max = total_bytes as f64 * config.memory.healthy_max / 100.0;
     cfg.critical_min = total_bytes as f64 * config.memory.critical_min / 100.0;
+    cfg.overview_visualization = Some("bar".into());
+    cfg.topbar_visualization = Some("bar".into());
     cfg
 }
 
@@ -406,12 +424,18 @@ fn recent_series(history:&VecDeque<Sample>,selector:fn(&Sample)->Option<f64>,sec
         })
     }).collect()
 }
-fn metric_topbar(id:&str,title:&str,value:Option<f64>,unit:&str,series:Vec<Value>,h:Health,cfg:&MetricConfig)->Value{
+fn metric_topbar(id:&str,title:&str,value:Option<f64>,unit:&str,progress_percent:Option<f64>,series:Vec<Value>,h:Health,cfg:&MetricConfig,default_visualization:&str)->Value{
     let shown=value.map(|v|format!("{:.0}{unit}",v)).unwrap_or_else(||"—".into());
+    let visualization=cfg.topbar_visualization.as_deref().unwrap_or(default_visualization);
+    let content=if visualization=="bar"{
+        json!({"type":"progress","label":shown,"value":progress_percent.unwrap_or(0.0),"color":health_color(h,cfg)})
+    }else{
+        json!({"type":"metric-sparkline","value":shown,"series":series,"color":health_color(h,cfg)})
+    };
     json!({
         "id":format!("system-monitor:{id}"),"title":title,
         "tooltip":format!("{title}: {shown} · {}",health_name(h)),
-        "content":{"type":"metric-sparkline","value":shown,"series":series,"color":health_color(h,cfg)},
+        "content":content,
         "action":{"type":"open-panel","panel":"system-monitor","context":{"metric":id}}
     })
 }
@@ -423,9 +447,13 @@ fn surfaces(store:&Store)->(Value,Value){
     let mem_used_cfg=effective_memory_used_config(&store.config,latest.map(|s|s.memory_total_bytes).unwrap_or(0));
     let cpu_h=health(cpu_value,&store.config.cpu);let mem_h=health(mem_value,&store.config.memory);let mem_used_h=health(mem_used_value,&mem_used_cfg);
     let mut top=Vec::new();
-    if store.config.cpu.show_topbar{top.push(metric_topbar("cpu","CPU",cpu_value,"%",recent_series(&store.history,|s|Some(s.cpu_percent),60,&store.config.cpu),cpu_h,&store.config.cpu));}
-    if store.config.memory.show_topbar{top.push(metric_topbar("memory","Memory",mem_value,"%",recent_series(&store.history,|s|Some(s.memory_percent),60,&store.config.memory),mem_h,&store.config.memory));}
-    if mem_used_cfg.show_topbar{top.push(metric_topbar("memoryUsed","Memory Used",mem_used_value.map(|v|v/1073741824.0)," GB",recent_series(&store.history,|s|Some(s.memory_used_bytes as f64/1073741824.0),60,&MetricConfig{healthy_max:mem_used_cfg.healthy_max/1073741824.0,critical_min:mem_used_cfg.critical_min/1073741824.0,..mem_used_cfg.clone()}),mem_used_h,&mem_used_cfg));}
+    if store.config.cpu.show_topbar{top.push(metric_topbar("cpu","CPU",cpu_value,"%",cpu_value,recent_series(&store.history,|s|Some(s.cpu_percent),60,&store.config.cpu),cpu_h,&store.config.cpu,"graph"));}
+    if store.config.memory.show_topbar{top.push(metric_topbar("memory","Memory",mem_value,"%",mem_value,recent_series(&store.history,|s|Some(s.memory_percent),60,&store.config.memory),mem_h,&store.config.memory,"bar"));}
+    if mem_used_cfg.show_topbar{
+        let used_gb=mem_used_value.map(|v|v/1073741824.0);
+        let used_percent=latest.and_then(|s|if s.memory_total_bytes>0{Some((s.memory_used_bytes as f64/s.memory_total_bytes as f64)*100.0)}else{None});
+        top.push(metric_topbar("memoryUsed","Memory Used",used_gb," GB",used_percent,recent_series(&store.history,|s|Some(s.memory_used_bytes as f64/1073741824.0),60,&MetricConfig{healthy_max:mem_used_cfg.healthy_max/1073741824.0,critical_min:mem_used_cfg.critical_min/1073741824.0,..mem_used_cfg.clone()}),mem_used_h,&mem_used_cfg,"bar"));
+    }
     let tray=vec![
         tray_item("cpu","CPU utilization",cpu_value,"%",cpu_h,&store.config.cpu),
         tray_item("memory","Memory utilization",mem_value,"%",mem_h,&store.config.memory),
@@ -587,6 +615,7 @@ mod tests{
     #[test] fn memory_used_defaults_follow_memory_percent_thresholds(){let c=Config::default();let m=effective_memory_used_config(&c,8*1024*1024*1024);assert_eq!(m.healthy_max,8.0*1024.0*1024.0*1024.0*0.70);assert_eq!(m.critical_min,8.0*1024.0*1024.0*1024.0*0.90);}
     #[test] fn recovered_transition_is_actionable_but_initial_healthy_is_not(){let c=metric_config(70.0,95.0);assert!(!AlertTransition::new("cpu","CPU",Some(10.0),Health::Unavailable,Health::Healthy,c.clone()).actionable());assert!(AlertTransition::new("cpu","CPU",Some(10.0),Health::Warning,Health::Healthy,c).actionable());}
     #[test] fn default_recovered_alert_sounds_without_notification(){let c=metric_config(70.0,95.0);let d=alert_delivery_for(&c,Health::Healthy);assert!(d.sound);assert!(!d.notification);}
+    #[test] fn visualization_defaults_match_metric_behavior(){let c=Config::default();assert_eq!(c.cpu.overview_visualization.as_deref(),Some("graph"));assert_eq!(c.cpu.topbar_visualization.as_deref(),Some("graph"));assert_eq!(c.memory.overview_visualization.as_deref(),Some("bar"));assert_eq!(c.memory.topbar_visualization.as_deref(),Some("bar"));let m=effective_memory_used_config(&c,8*1024*1024*1024);assert_eq!(m.overview_visualization.as_deref(),Some("bar"));assert_eq!(m.topbar_visualization.as_deref(),Some("bar"));}
     #[test] fn topbar_series_colors_each_sample_by_its_own_threshold_state(){
         let cfg=metric_config(60.0,90.0);
         let now=now_ms();
