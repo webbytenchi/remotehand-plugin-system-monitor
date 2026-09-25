@@ -337,6 +337,7 @@ impl WindowsSystemProvider {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Health { Healthy, Warning, Critical, Unavailable }
+fn percent(used:Option<u64>,total:u64)->Option<f64>{used.filter(|_|total>0).map(|u|(u as f64/total as f64)*100.0)}
 fn health(value: Option<f64>, cfg: &MetricConfig) -> Health {
     let Some(v)=value.filter(|v|v.is_finite()) else { return Health::Unavailable; };
     if v >= cfg.critical_min { Health::Critical }
@@ -385,27 +386,40 @@ impl TransitionTracker {
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GpuSnapshot {
+    timestamp: u64,
+    gpus: Vec<GpuTelemetry>,
+}
+
 struct Store {
     config: Config,
     history: VecDeque<Sample>,
+    gpu_history: VecDeque<GpuSnapshot>,
+    gpu_latest: Vec<GpuTelemetry>,
     gpu_adapters: Vec<GpuAdapterInfo>,
     gpu_discovery_state: String,
     gpu_discovery_error: Option<String>,
     cpu_tracker: TransitionTracker,
     temp_tracker: TransitionTracker,
     memory_tracker: TransitionTracker,
+    gpu_trackers: BTreeMap<String,TransitionTracker>,
 }
 impl Store {
     fn new() -> Self {
         Self {
             config: Config::default(),
             history: VecDeque::new(),
+            gpu_history: VecDeque::new(),
+            gpu_latest: Vec::new(),
             gpu_adapters: Vec::new(),
             gpu_discovery_state: "pending".into(),
             gpu_discovery_error: None,
             cpu_tracker: Default::default(),
             temp_tracker: Default::default(),
             memory_tracker: Default::default(),
+            gpu_trackers: BTreeMap::new(),
         }
     }
     fn record(&mut self, sample: Sample) -> Vec<AlertTransition> {
@@ -421,19 +435,48 @@ impl Store {
         if let Some((from,to))=self.memory_tracker.observe(mem){ out.push(AlertTransition::new("memory","Memory utilization",Some(sample.memory_percent),from,to,self.config.memory.clone())); }
         out
     }
+
+    fn record_gpu(&mut self, gpus:Vec<GpuTelemetry>)->Vec<AlertTransition>{
+        let timestamp=now_ms();
+        self.gpu_latest=gpus.clone();
+        self.gpu_history.push_back(GpuSnapshot{timestamp,gpus:gpus.clone()});
+        let cutoff=timestamp.saturating_sub(MAX_HISTORY_SECONDS*1000);
+        while self.gpu_history.front().is_some_and(|s|s.timestamp<cutoff){self.gpu_history.pop_front();}
+
+        let mut out=Vec::new();
+        for gpu in gpus {
+            let cfg=self.config.gpus.entry(gpu.luid.clone()).or_insert_with(||gpu_config(gpu.index)).clone();
+            let dedicated_percent=percent(gpu.dedicated_used_bytes,gpu.dedicated_total_bytes);
+            let shared_percent=percent(gpu.shared_used_bytes,gpu.shared_total_bytes);
+            for (kind,title,value,metric_cfg) in [
+                ("utilization",format!("GPU {} utilization",gpu.index),gpu.utilization_percent,cfg.utilization),
+                ("dedicatedMemory",format!("GPU {} dedicated memory",gpu.index),dedicated_percent,cfg.dedicated_memory),
+                ("sharedMemory",format!("GPU {} shared memory",gpu.index),shared_percent,cfg.shared_memory),
+                ("temperature",format!("GPU {} temperature",gpu.index),gpu.temperature_c,cfg.temperature),
+            ] {
+                let h=health(value,&metric_cfg);
+                let key=format!("{}:{kind}",gpu.luid);
+                let tracker=self.gpu_trackers.entry(key.clone()).or_default();
+                if let Some((from,to))=tracker.observe(h){
+                    out.push(AlertTransition::new(format!("gpu:{key}"),title,value,from,to,metric_cfg));
+                }
+            }
+        }
+        out
+    }
 }
 
 #[derive(Clone)]
 struct AlertTransition {
-    metric: &'static str,
-    title: &'static str,
+    metric: String,
+    title: String,
     value: Option<f64>,
     from: Health,
     to: Health,
     config: MetricConfig,
 }
 impl AlertTransition {
-    fn new(metric:&'static str,title:&'static str,value:Option<f64>,from:Health,to:Health,config:MetricConfig)->Self{Self{metric,title,value,from,to,config}}
+    fn new(metric:impl Into<String>,title:impl Into<String>,value:Option<f64>,from:Health,to:Health,config:MetricConfig)->Self{Self{metric:metric.into(),title:title.into(),value,from,to,config}}
     fn actionable(&self)->bool{
         matches!(self.to,Health::Warning|Health::Critical)
             || (self.to==Health::Healthy && matches!(self.from,Health::Warning|Health::Critical))
