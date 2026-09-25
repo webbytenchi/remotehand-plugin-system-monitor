@@ -121,6 +121,16 @@ struct MetricConfig {
     overview_visualization: Option<String>,
     #[serde(default)]
     topbar_visualization: Option<String>,
+    #[serde(default)]
+    topbar_title: Option<String>,
+    #[serde(default)]
+    topbar_title_color: Option<String>,
+    #[serde(default)]
+    topbar_value_color: Option<String>,
+    #[serde(default)]
+    topbar_background_color: Option<String>,
+    #[serde(default)]
+    topbar_border_color: Option<String>,
     healthy_max: f64,
     critical_min: f64,
     healthy_color: String,
@@ -143,6 +153,11 @@ fn metric_config(healthy_max: f64, critical_min: f64) -> MetricConfig {
         recovered_alert: Some(alert_delivery(true, false)),
         overview_visualization: None,
         topbar_visualization: None,
+        topbar_title: None,
+        topbar_title_color: None,
+        topbar_value_color: None,
+        topbar_background_color: None,
+        topbar_border_color: None,
         healthy_max,
         critical_min,
         healthy_color: "#2f9e62".into(),
@@ -174,6 +189,7 @@ impl Default for Config {
                 let mut m=metric_config(70.0,95.0);
                 m.overview_visualization=Some("graph".into());
                 m.topbar_visualization=Some("graph".into());
+                m.topbar_title=Some("CPU".into());
                 m
             },
             temperature: metric_config(60.0, 90.0),
@@ -181,6 +197,7 @@ impl Default for Config {
                 let mut m=metric_config(70.0,90.0);
                 m.overview_visualization=Some("bar".into());
                 m.topbar_visualization=Some("bar".into());
+                m.topbar_title=Some("Memory".into());
                 m
             },
             memory_used: None,
@@ -308,6 +325,7 @@ fn effective_memory_used_config(config: &Config, total_bytes: u64) -> MetricConf
     cfg.critical_min = total_bytes as f64 * config.memory.critical_min / 100.0;
     cfg.overview_visualization = Some("bar".into());
     cfg.topbar_visualization = Some("bar".into());
+    cfg.topbar_title = Some("Memory Used".into());
     cfg
 }
 
@@ -424,18 +442,31 @@ fn recent_series(history:&VecDeque<Sample>,selector:fn(&Sample)->Option<f64>,sec
         })
     }).collect()
 }
-fn metric_topbar(id:&str,title:&str,value:Option<f64>,unit:&str,progress_percent:Option<f64>,series:Vec<Value>,h:Health,cfg:&MetricConfig,default_visualization:&str)->Value{
+fn metric_topbar(id:&str,default_title:&str,value:Option<f64>,unit:&str,progress_percent:Option<f64>,series:Vec<Value>,h:Health,cfg:&MetricConfig,default_visualization:&str)->Value{
     let shown=value.map(|v|format!("{:.0}{unit}",v)).unwrap_or_else(||"—".into());
+    let title=cfg.topbar_title.as_deref().filter(|v|!v.trim().is_empty()).unwrap_or(default_title);
     let visualization=cfg.topbar_visualization.as_deref().unwrap_or(default_visualization);
-    let content=if visualization=="bar"{
-        json!({"type":"progress","label":shown,"value":progress_percent.unwrap_or(0.0),"color":health_color(h,cfg)})
+    let state_color=health_color(h,cfg);
+    let normal_value_color=cfg.topbar_value_color.as_deref().unwrap_or(state_color);
+    let value_color=if h==Health::Healthy{normal_value_color}else{state_color};
+    let title_color=cfg.topbar_title_color.as_deref().unwrap_or("#a8b4c2");
+    let visual=if visualization=="bar"{
+        json!({"type":"progress","label":shown,"value":progress_percent.unwrap_or(0.0),"color":value_color})
     }else{
-        json!({"type":"metric-sparkline","value":shown,"series":series,"color":health_color(h,cfg)})
+        json!({"type":"metric-sparkline","value":shown,"series":series,"color":value_color})
     };
     json!({
         "id":format!("system-monitor:{id}"),"title":title,
         "tooltip":format!("{title}: {shown} · {}",health_name(h)),
-        "content":content,
+        "content":{
+            "type":"stack",
+            "backgroundColor":cfg.topbar_background_color,
+            "borderColor":cfg.topbar_border_color,
+            "children":[
+                {"type":"text","label":title,"fontSize":9,"color":title_color},
+                visual
+            ]
+        },
         "action":{"type":"open-panel","panel":"system-monitor","context":{"metric":id}}
     })
 }
