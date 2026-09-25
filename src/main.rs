@@ -183,7 +183,7 @@ struct GpuConfig {
     shared_memory: MetricConfig,
     temperature: MetricConfig,
 }
-fn gpu_config(index:u32,name:&str)->GpuConfig{
+fn gpu_config(_index:u32,name:&str)->GpuConfig{
     let mut utilization=metric_config(70.0,95.0);
     utilization.overview_visualization=Some("graph".into());
     utilization.topbar_visualization=Some("graph".into());
