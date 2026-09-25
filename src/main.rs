@@ -850,6 +850,21 @@ mod tests{
     #[test] fn recovered_transition_is_actionable_but_initial_healthy_is_not(){let c=metric_config(70.0,95.0);assert!(!AlertTransition::new("cpu","CPU",Some(10.0),Health::Unavailable,Health::Healthy,c.clone()).actionable());assert!(AlertTransition::new("cpu","CPU",Some(10.0),Health::Warning,Health::Healthy,c).actionable());}
     #[test] fn default_recovered_alert_sounds_without_notification(){let c=metric_config(70.0,95.0);let d=alert_delivery_for(&c,Health::Healthy);assert!(d.sound);assert!(!d.notification);}
     #[test] fn visualization_defaults_match_metric_behavior(){let c=Config::default();assert_eq!(c.cpu.overview_visualization.as_deref(),Some("graph"));assert_eq!(c.cpu.topbar_visualization.as_deref(),Some("graph"));assert_eq!(c.memory.overview_visualization.as_deref(),Some("bar"));assert_eq!(c.memory.topbar_visualization.as_deref(),Some("bar"));}
+    #[test] fn gpu_defaults_are_per_adapter_and_optional_temperature(){
+        let g=gpu_config(2);
+        assert_eq!(g.utilization.topbar_title.as_deref(),Some("GPU 2"));
+        assert!(g.utilization.show_topbar);
+        assert!(!g.dedicated_memory.show_topbar);
+        assert!(!g.shared_memory.show_topbar);
+        assert!(!g.temperature.show_topbar);
+        assert_eq!(g.dedicated_memory.overview_visualization.as_deref(),Some("bar"));
+        assert_eq!(g.temperature.overview_visualization.as_deref(),Some("graph"));
+    }
+    #[test] fn gpu_memory_percent_requires_capacity(){
+        assert_eq!(percent(Some(4),8),Some(50.0));
+        assert_eq!(percent(Some(4),0),None);
+        assert_eq!(percent(None,8),None);
+    }
     #[test] fn topbar_series_colors_each_sample_by_its_own_threshold_state(){
         let cfg=metric_config(60.0,90.0);
         let now=now_ms();
