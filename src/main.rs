@@ -560,9 +560,10 @@ fn main()->Result<(),String>{
     // CPU/memory sampler can become ready while DXGI enumeration completes independently.
     {
         let gpu_store=Arc::clone(&store);
+        let gpu_output=output_tx.clone();
         thread::spawn(move||{
             let result=gpu_windows::enumerate_gpus();
-            if let Ok(mut guard)=gpu_store.lock(){
+            let payload=if let Ok(mut guard)=gpu_store.lock(){
                 match result{
                     Ok(adapters)=>{
                         guard.gpu_adapters=adapters;
@@ -575,7 +576,19 @@ fn main()->Result<(),String>{
                         guard.gpu_discovery_error=Some(error);
                     }
                 }
-            }
+                json!({
+                    "state":guard.gpu_discovery_state,
+                    "error":guard.gpu_discovery_error,
+                    "adapters":guard.gpu_adapters
+                })
+            }else{
+                json!({"state":"error","error":"state lock poisoned","adapters":[]})
+            };
+            let _=send_outbound(&gpu_output,PluginEvent{
+                message_type:"plugin.event",
+                event:"system.gpu.discovered",
+                payload
+            });
         });
     }
 
