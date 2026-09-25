@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::io::{self, Read, Write};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use sysinfo::System;
 
 mod gpu_windows;
-use gpu_windows::GpuAdapterInfo;
+use gpu_windows::{GpuAdapterInfo, GpuSampler, GpuTelemetry};
 
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const STORAGE_KEY: &str = "config-v1";
@@ -177,12 +177,49 @@ fn metric_config(healthy_max: f64, critical_min: f64) -> MetricConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct GpuConfig {
+    utilization: MetricConfig,
+    dedicated_memory: MetricConfig,
+    shared_memory: MetricConfig,
+    temperature: MetricConfig,
+}
+fn gpu_config(index:u32)->GpuConfig{
+    let mut utilization=metric_config(70.0,95.0);
+    utilization.overview_visualization=Some("graph".into());
+    utilization.topbar_visualization=Some("graph".into());
+    utilization.topbar_title=Some(format!("GPU {index}"));
+
+    let mut dedicated_memory=metric_config(80.0,95.0);
+    dedicated_memory.overview_visualization=Some("bar".into());
+    dedicated_memory.topbar_visualization=Some("bar".into());
+    dedicated_memory.topbar_title=Some(format!("GPU {index} VRAM"));
+    dedicated_memory.show_topbar=false;
+
+    let mut shared_memory=metric_config(80.0,95.0);
+    shared_memory.overview_visualization=Some("bar".into());
+    shared_memory.topbar_visualization=Some("bar".into());
+    shared_memory.topbar_title=Some(format!("GPU {index} Shared"));
+    shared_memory.show_topbar=false;
+
+    let mut temperature=metric_config(70.0,90.0);
+    temperature.overview_visualization=Some("graph".into());
+    temperature.topbar_visualization=Some("graph".into());
+    temperature.topbar_title=Some(format!("GPU {index} Temp"));
+    temperature.show_topbar=false;
+
+    GpuConfig{utilization,dedicated_memory,shared_memory,temperature}
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Config {
     sample_seconds: u64,
     default_window_minutes: u64,
     cpu: MetricConfig,
     temperature: MetricConfig,
     memory: MetricConfig,
+    #[serde(default)]
+    gpus: BTreeMap<String,GpuConfig>,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -204,6 +241,7 @@ impl Default for Config {
                 m.topbar_title=Some("Memory".into());
                 m
             },
+            gpus:BTreeMap::new(),
         }
     }
 }
@@ -213,6 +251,18 @@ fn normalize_config(mut c: Config) -> Result<Config, String> {
     for (name, m) in [("CPU",&c.cpu),("Temperature",&c.temperature),("Memory",&c.memory)] {
         if !m.healthy_max.is_finite() || !m.critical_min.is_finite() || m.healthy_max >= m.critical_min {
             return Err(format!("{name} thresholds must be finite and healthy < critical"));
+        }
+    }
+    for (luid,gpu) in &c.gpus {
+        for (name,m) in [
+            ("utilization",&gpu.utilization),
+            ("dedicated memory",&gpu.dedicated_memory),
+            ("shared memory",&gpu.shared_memory),
+            ("temperature",&gpu.temperature),
+        ] {
+            if !m.healthy_max.is_finite() || !m.critical_min.is_finite() || m.healthy_max >= m.critical_min {
+                return Err(format!("GPU {luid} {name} thresholds must be finite and healthy < critical"));
+            }
         }
     }
     Ok(c)
