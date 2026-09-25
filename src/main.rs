@@ -7,6 +7,9 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use sysinfo::System;
 
+mod gpu_windows;
+use gpu_windows::GpuAdapterInfo;
+
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const STORAGE_KEY: &str = "config-v1";
 const MAX_HISTORY_SECONDS: u64 = 60 * 60;
@@ -335,13 +338,25 @@ impl TransitionTracker {
 struct Store {
     config: Config,
     history: VecDeque<Sample>,
+    gpu_adapters: Vec<GpuAdapterInfo>,
+    gpu_discovery_state: String,
+    gpu_discovery_error: Option<String>,
     cpu_tracker: TransitionTracker,
     temp_tracker: TransitionTracker,
     memory_tracker: TransitionTracker,
 }
 impl Store {
     fn new() -> Self {
-        Self { config: Config::default(), history: VecDeque::new(), cpu_tracker:Default::default(), temp_tracker:Default::default(), memory_tracker:Default::default() }
+        Self {
+            config: Config::default(),
+            history: VecDeque::new(),
+            gpu_adapters: Vec::new(),
+            gpu_discovery_state: "pending".into(),
+            gpu_discovery_error: None,
+            cpu_tracker: Default::default(),
+            temp_tracker: Default::default(),
+            memory_tracker: Default::default(),
+        }
     }
     fn record(&mut self, sample: Sample) -> Vec<AlertTransition> {
         self.history.push_back(sample.clone());
@@ -480,7 +495,16 @@ fn emit_surfaces(output:&mpsc::Sender<Value>,store:&Store)->Result<(),String>{
     send_outbound(output,PluginEvent{message_type:"plugin.event",event:"tray.update",payload:tray})
 }
 fn status_value(store:&Store)->Value{
-    json!({"config":&store.config,"latest":store.history.back(),"history":&store.history})
+    json!({
+        "config":&store.config,
+        "latest":store.history.back(),
+        "history":&store.history,
+        "gpu":{
+            "state":store.gpu_discovery_state,
+            "error":store.gpu_discovery_error,
+            "adapters":store.gpu_adapters
+        }
+    })
 }
 fn emit_alert(output:&mpsc::Sender<Value>,transition:&AlertTransition){
     if !transition.actionable(){return;}
@@ -531,6 +555,29 @@ fn main()->Result<(),String>{
     let config=load_config(&mut input,&output_tx,&mut host_request_id).unwrap_or_default();
     let store=Arc::new(Mutex::new(Store::new()));
     store.lock().map_err(|_|"state lock poisoned".to_string())?.config=config;
+
+    // GPU discovery is intentionally off the startup/handshake path. RemoteHand and the
+    // CPU/memory sampler can become ready while DXGI enumeration completes independently.
+    {
+        let gpu_store=Arc::clone(&store);
+        thread::spawn(move||{
+            let result=gpu_windows::enumerate_gpus();
+            if let Ok(mut guard)=gpu_store.lock(){
+                match result{
+                    Ok(adapters)=>{
+                        guard.gpu_adapters=adapters;
+                        guard.gpu_discovery_state="ready".into();
+                        guard.gpu_discovery_error=None;
+                    }
+                    Err(error)=>{
+                        guard.gpu_adapters.clear();
+                        guard.gpu_discovery_state="error".into();
+                        guard.gpu_discovery_error=Some(error);
+                    }
+                }
+            }
+        });
+    }
 
     {
         let sampler_store=Arc::clone(&store);let sampler_output=output_tx.clone();
