@@ -422,7 +422,26 @@ mod imp {
                     .filter(|((luid, _), _)| luid == &adapter.luid)
                     .map(|((_, kind), value)| GpuEngineUsage { name: kind.clone(), percent: *value })
                     .collect();
-                engines.sort_by(|a, b| b.percent.partial_cmp(&a.percent).unwrap_or(std::cmp::Ordering::Equal));
+                fn engine_rank(name:&str)->u8{
+                    match name.to_ascii_lowercase().as_str(){
+                        "3d"=>0,
+                        "copy"=>1,
+                        "videodecode"=>2,
+                        "videoencode"=>3,
+                        "videoprocessing"=>4,
+                        "compute"=>5,
+                        "compute_0"=>5,
+                        "compute_1"=>5,
+                        "gdi render"=>6,
+                        "gdirender"=>6,
+                        "legacyoverlay"=>7,
+                        "ofa"=>8,
+                        "vr"=>9,
+                        "security"=>10,
+                        _=>50,
+                    }
+                }
+                engines.sort_by(|a,b| engine_rank(&a.name).cmp(&engine_rank(&b.name)).then_with(||a.name.cmp(&b.name)));
                 let pdh_util = engines.iter().map(|e| e.percent).fold(None, |m, v| Some(m.map_or(v, |x: f64| x.max(v))));
                 let mut temperature_c = None;
                 let mut temperature_provider = None;
