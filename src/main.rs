@@ -128,6 +128,8 @@ struct MetricConfig {
     #[serde(default)]
     topbar_value_color: Option<String>,
     #[serde(default)]
+    topbar_value_alert_color: Option<String>,
+    #[serde(default)]
     topbar_background_color: Option<String>,
     #[serde(default)]
     topbar_border_color: Option<String>,
@@ -156,6 +158,7 @@ fn metric_config(healthy_max: f64, critical_min: f64) -> MetricConfig {
         topbar_title: None,
         topbar_title_color: None,
         topbar_value_color: None,
+        topbar_value_alert_color: None,
         topbar_background_color: None,
         topbar_border_color: None,
         healthy_max,
@@ -447,13 +450,14 @@ fn metric_topbar(id:&str,default_title:&str,value:Option<f64>,unit:&str,progress
     let title=cfg.topbar_title.as_deref().filter(|v|!v.trim().is_empty()).unwrap_or(default_title);
     let visualization=cfg.topbar_visualization.as_deref().unwrap_or(default_visualization);
     let state_color=health_color(h,cfg);
-    let normal_value_color=cfg.topbar_value_color.as_deref().unwrap_or(state_color);
-    let value_color=if h==Health::Healthy{normal_value_color}else{state_color};
+    let value_normal=cfg.topbar_value_color.as_deref().unwrap_or("#dce4ee");
+    let value_alert=cfg.topbar_value_alert_color.as_deref().unwrap_or("#efaaaa");
+    let value_color=if matches!(h,Health::Warning|Health::Critical){value_alert}else{value_normal};
     let title_color=cfg.topbar_title_color.as_deref().unwrap_or("#a8b4c2");
     let visual=if visualization=="bar"{
-        json!({"type":"progress","label":shown,"value":progress_percent.unwrap_or(0.0),"color":value_color})
+        json!({"type":"progress","label":"","value":progress_percent.unwrap_or(0.0),"color":state_color})
     }else{
-        json!({"type":"metric-sparkline","value":shown,"series":series,"color":value_color})
+        json!({"type":"sparkline","series":series,"color":state_color})
     };
     json!({
         "id":format!("system-monitor:{id}"),"title":title,
@@ -464,6 +468,7 @@ fn metric_topbar(id:&str,default_title:&str,value:Option<f64>,unit:&str,progress
             "borderColor":cfg.topbar_border_color,
             "children":[
                 {"type":"text","label":title,"fontSize":9,"color":title_color},
+                {"type":"metric","value":shown,"fontSize":14,"color":value_color},
                 visual
             ]
         },
