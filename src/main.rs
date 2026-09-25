@@ -95,6 +95,8 @@ struct MetricConfig {
     sound: bool,
     #[serde(default = "default_true")]
     notification: bool,
+    #[serde(default)]
+    sound_file: Option<Value>,
     healthy_max: f64,
     critical_min: f64,
     healthy_color: String,
@@ -111,6 +113,7 @@ fn metric_config(healthy_max: f64, critical_min: f64) -> MetricConfig {
         show_tray: false,
         sound: true,
         notification: true,
+        sound_file: None,
         healthy_max,
         critical_min,
         healthy_color: "#2f9e62".into(),
@@ -429,10 +432,9 @@ fn status_value(store:&Store)->Value{
 }
 fn emit_alert(output:&mpsc::Sender<Value>,transition:&AlertTransition){
     if !transition.actionable(){return;}
-    if transition.config.sound{play_alert_sound();}
     let state=health_name(transition.to);
     let value=transition.value.map(|v|if transition.metric=="memoryUsed"{format!("{:.1} GB",v/1073741824.0)}else{format!("{v:.1}")}).unwrap_or_else(||"unavailable".into());
-    let payload=json!({"metric":transition.metric,"title":transition.title,"value":transition.value,"state":state,"from":health_name(transition.from),"sound":transition.config.sound,"notification":transition.config.notification});
+    let payload=json!({"metric":transition.metric,"title":transition.title,"value":transition.value,"state":state,"from":health_name(transition.from),"sound":transition.config.sound,"soundFile":transition.config.sound_file,"notification":transition.config.notification});
     let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"system.alert",payload});
     if transition.config.notification{
         let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"notification.show",payload:json!({
@@ -534,14 +536,13 @@ fn main()->Result<(),String>{
                 let guard=store.lock().map_err(|_|"state lock poisoned".to_string())?;
                 let memory_used_cfg=guard.history.back().map(|s|effective_memory_used_config(&guard.config,s.memory_total_bytes)).unwrap_or_else(||effective_memory_used_config(&guard.config,0));
                 let cfg=match metric{"memory"=>&guard.config.memory,"memoryUsed"=>&memory_used_cfg,_=>&guard.config.cpu};
-                if cfg.sound{play_alert_sound();}
                 if cfg.notification{
                     let _=send_outbound(&output_tx,PluginEvent{message_type:"plugin.event",event:"notification.show",payload:json!({
                         "itemId":format!("system-monitor-{metric}"),"title":"System Monitor · Test","body":format!("{metric} alert test"),"tone":"warning","silent":true,
                         "action":{"type":"open-panel","panel":"system-monitor","context":{"metric":metric}}
                     })});
                 }
-                PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"tested":metric}),error:String::new()}
+                PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"tested":metric,"sound":cfg.sound,"soundFile":cfg.sound_file}),error:String::new()}
             }
             _=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error:format!("unknown method: {}",request.method)}
         };
