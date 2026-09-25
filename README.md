@@ -1,12 +1,12 @@
 # RemoteHand System Monitor
 
-Status: **v0.2.0-rc.1 release candidate**
+Status: **v0.2.0**
 
 RemoteHand System Monitor is a Windows-first plugin for local CPU, memory, and GPU monitoring. It keeps hardware-monitoring semantics inside the plugin while RemoteHand core provides only generic plugin infrastructure.
 
-## v0.2.0-rc.1 scope
+## v0.2.0 scope
 
-The v0.2.0 release candidate keeps the CPU + memory baseline and adds native Windows GPU monitoring:
+The v0.2.0 release keeps the CPU + memory baseline and adds native Windows GPU monitoring:
 
 - overall CPU utilization
 - per-logical-core CPU utilization
@@ -52,17 +52,17 @@ Exports contain sampled telemetry for the selected history window, including tim
 
 ## Platform direction
 
-The current release candidate is validated on Windows 11.
+v0.2.0 is validated on Windows 11.
 
 The implementation keeps a provider boundary so Linux support and additional hardware providers can be added later without moving hardware-specific behavior into RemoteHand core.
 
 ## CPU temperature
 
-CPU temperature remains deliberately deferred beyond v0.2.0-rc.1.
+CPU temperature remains deliberately deferred beyond v0.2.0.
 
-The v0.2.0-rc.1 package does **not** require .NET, PawnIO, LibreHardwareMonitor, another separately installed hardware-monitoring application, or a third-party driver solely for temperature telemetry.
+The v0.2.0 package does **not** require .NET, PawnIO, LibreHardwareMonitor, another separately installed hardware-monitoring application, or a third-party driver solely for temperature telemetry.
 
-Earlier CPU-temperature provider experiments remain available in Git history but are not part of the v0.2.0-rc.1 source tree or package.
+Earlier CPU-temperature provider experiments remain available in Git history but are not part of the v0.2.0 source tree or package.
 
 ## Architecture rule
 
@@ -74,7 +74,7 @@ Do not add CPU-, GPU-, sensor-, vendor-, or hardware-specific logic to RemoteHan
 
 ## Current non-goals
 
-Not in v0.2.0-rc.1:
+Not in v0.2.0:
 
 - CPU temperature
 - Linux implementation
@@ -85,4 +85,4 @@ Not in v0.2.0-rc.1:
 - persistent telemetry database
 - motherboard-wide sensor-suite replacement
 
-See `V0.1.0-DESIGN.md` for the original baseline design. v0.2.0-rc.1 extends that baseline with native Windows GPU monitoring.
+See `V0.1.0-DESIGN.md` for the original baseline design. v0.2.0 extends that baseline with native Windows GPU monitoring.
