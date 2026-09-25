@@ -326,20 +326,6 @@ impl AlertTransition {
     fn actionable(&self)->bool{matches!(self.to,Health::Warning|Health::Critical)}
 }
 
-#[cfg(windows)]
-fn play_alert_sound() {
-    #[link(name = "user32")]
-    unsafe extern "system" {
-        fn MessageBeep(u_type: u32) -> i32;
-    }
-    const MB_ICONEXCLAMATION: u32 = 0x00000030;
-    unsafe {
-        let _ = MessageBeep(MB_ICONEXCLAMATION);
-    }
-}
-#[cfg(not(windows))]
-fn play_alert_sound() {}
-
 fn read_frame(reader:&mut impl Read)->Result<Vec<u8>,String>{
     let mut header=[0u8;4]; reader.read_exact(&mut header).map_err(|e|e.to_string())?;
     let len=u32::from_le_bytes(header) as usize;
