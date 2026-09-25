@@ -130,6 +130,8 @@ struct Config {
     cpu: MetricConfig,
     temperature: MetricConfig,
     memory: MetricConfig,
+    #[serde(default)]
+    memory_used: Option<MetricConfig>,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -139,6 +141,7 @@ impl Default for Config {
             cpu: metric_config(70.0, 95.0),
             temperature: metric_config(60.0, 90.0),
             memory: metric_config(70.0, 90.0),
+            memory_used: None,
         }
     }
 }
@@ -148,6 +151,11 @@ fn normalize_config(mut c: Config) -> Result<Config, String> {
     for (name, m) in [("CPU",&c.cpu),("Temperature",&c.temperature),("Memory",&c.memory)] {
         if !m.healthy_max.is_finite() || !m.critical_min.is_finite() || m.healthy_max >= m.critical_min {
             return Err(format!("{name} thresholds must be finite and healthy < critical"));
+        }
+    }
+    if let Some(m) = &c.memory_used {
+        if !m.healthy_max.is_finite() || !m.critical_min.is_finite() || m.healthy_max < 0.0 || m.healthy_max >= m.critical_min {
+            return Err("Memory used thresholds must be finite, non-negative, and healthy < critical".into());
         }
     }
     Ok(c)
@@ -240,6 +248,14 @@ fn health_color(h: Health, cfg: &MetricConfig) -> &str {
     }
 }
 
+fn effective_memory_used_config(config: &Config, total_bytes: u64) -> MetricConfig {
+    if let Some(cfg) = &config.memory_used { return cfg.clone(); }
+    let mut cfg = config.memory.clone();
+    cfg.healthy_max = total_bytes as f64 * config.memory.healthy_max / 100.0;
+    cfg.critical_min = total_bytes as f64 * config.memory.critical_min / 100.0;
+    cfg
+}
+
 #[derive(Clone)]
 struct TransitionTracker {
     committed: Health,
@@ -267,10 +283,11 @@ struct Store {
     cpu_tracker: TransitionTracker,
     temp_tracker: TransitionTracker,
     memory_tracker: TransitionTracker,
+    memory_used_tracker: TransitionTracker,
 }
 impl Store {
     fn new() -> Self {
-        Self { config: Config::default(), history: VecDeque::new(), cpu_tracker:Default::default(), temp_tracker:Default::default(), memory_tracker:Default::default() }
+        Self { config: Config::default(), history: VecDeque::new(), cpu_tracker:Default::default(), temp_tracker:Default::default(), memory_tracker:Default::default(), memory_used_tracker:Default::default() }
     }
     fn record(&mut self, sample: Sample) -> Vec<AlertTransition> {
         self.history.push_back(sample.clone());
@@ -283,6 +300,9 @@ impl Store {
         if let Some((from,to))=self.temp_tracker.observe(temp){ out.push(AlertTransition::new("temperature","CPU temperature",sample.temperature_c,from,to,self.config.temperature.clone())); }
         let mem=health(Some(sample.memory_percent),&self.config.memory);
         if let Some((from,to))=self.memory_tracker.observe(mem){ out.push(AlertTransition::new("memory","Memory utilization",Some(sample.memory_percent),from,to,self.config.memory.clone())); }
+        let mem_used_cfg=effective_memory_used_config(&self.config,sample.memory_total_bytes);
+        let mem_used=health(Some(sample.memory_used_bytes as f64),&mem_used_cfg);
+        if let Some((from,to))=self.memory_used_tracker.observe(mem_used){ out.push(AlertTransition::new("memoryUsed","Memory used",Some(sample.memory_used_bytes as f64),from,to,mem_used_cfg)); }
         out
     }
 }
@@ -373,13 +393,17 @@ fn surfaces(store:&Store)->(Value,Value){
     let latest=store.history.back();
     let cpu_value=latest.map(|s|s.cpu_percent);
     let mem_value=latest.map(|s|s.memory_percent);
-    let cpu_h=health(cpu_value,&store.config.cpu);let mem_h=health(mem_value,&store.config.memory);
+    let mem_used_value=latest.map(|s|s.memory_used_bytes as f64);
+    let mem_used_cfg=effective_memory_used_config(&store.config,latest.map(|s|s.memory_total_bytes).unwrap_or(0));
+    let cpu_h=health(cpu_value,&store.config.cpu);let mem_h=health(mem_value,&store.config.memory);let mem_used_h=health(mem_used_value,&mem_used_cfg);
     let mut top=Vec::new();
     if store.config.cpu.show_topbar{top.push(metric_topbar("cpu","CPU",cpu_value,"%",recent_series(&store.history,|s|Some(s.cpu_percent),60,&store.config.cpu),cpu_h,&store.config.cpu));}
     if store.config.memory.show_topbar{top.push(metric_topbar("memory","Memory",mem_value,"%",recent_series(&store.history,|s|Some(s.memory_percent),60,&store.config.memory),mem_h,&store.config.memory));}
+    if mem_used_cfg.show_topbar{top.push(metric_topbar("memoryUsed","Memory Used",mem_used_value.map(|v|v/1073741824.0)," GB",recent_series(&store.history,|s|Some(s.memory_used_bytes as f64/1073741824.0),60,&MetricConfig{healthy_max:mem_used_cfg.healthy_max/1073741824.0,critical_min:mem_used_cfg.critical_min/1073741824.0,..mem_used_cfg.clone()}),mem_used_h,&mem_used_cfg));}
     let tray=vec![
         tray_item("cpu","CPU utilization",cpu_value,"%",cpu_h,&store.config.cpu),
         tray_item("memory","Memory utilization",mem_value,"%",mem_h,&store.config.memory),
+        tray_item("memoryUsed","Memory used",mem_used_value.map(|v|v/1073741824.0)," GB",mem_used_h,&mem_used_cfg),
     ];
     (json!({"items":top}),json!({"items":tray}))
 }
@@ -405,7 +429,7 @@ fn emit_alert(output:&mpsc::Sender<Value>,transition:&AlertTransition){
     if !transition.actionable(){return;}
     if transition.config.sound{play_alert_sound();}
     let state=health_name(transition.to);
-    let value=transition.value.map(|v|format!("{v:.1}")).unwrap_or_else(||"unavailable".into());
+    let value=transition.value.map(|v|if transition.metric=="memoryUsed"{format!("{:.1} GB",v/1073741824.0)}else{format!("{v:.1}")}).unwrap_or_else(||"unavailable".into());
     let payload=json!({"metric":transition.metric,"title":transition.title,"value":transition.value,"state":state,"from":health_name(transition.from),"sound":transition.config.sound,"notification":transition.config.notification});
     let _=send_outbound(output,PluginEvent{message_type:"plugin.event",event:"system.alert",payload});
     if transition.config.notification{
@@ -506,7 +530,8 @@ fn main()->Result<(),String>{
             "system.alert.test"=>{
                 let metric=request.params.get("metric").and_then(Value::as_str).unwrap_or("cpu");
                 let guard=store.lock().map_err(|_|"state lock poisoned".to_string())?;
-                let cfg=match metric{"memory"=>&guard.config.memory,_=>&guard.config.cpu};
+                let memory_used_cfg=guard.history.back().map(|s|effective_memory_used_config(&guard.config,s.memory_total_bytes)).unwrap_or_else(||effective_memory_used_config(&guard.config,0));
+                let cfg=match metric{"memory"=>&guard.config.memory,"memoryUsed"=>&memory_used_cfg,_=>&guard.config.cpu};
                 if cfg.sound{play_alert_sound();}
                 if cfg.notification{
                     let _=send_outbound(&output_tx,PluginEvent{message_type:"plugin.event",event:"notification.show",payload:json!({
@@ -532,6 +557,7 @@ mod tests{
     #[test] fn unavailable_is_not_zero(){let c=metric_config(60.0,90.0);assert_eq!(health(None,&c),Health::Unavailable);}
     #[test] fn transitions_require_two_samples(){let mut t=TransitionTracker::default();assert!(t.observe(Health::Healthy).is_none());assert_eq!(t.observe(Health::Healthy),Some((Health::Unavailable,Health::Healthy)));assert!(t.observe(Health::Critical).is_none());assert_eq!(t.observe(Health::Critical),Some((Health::Healthy,Health::Critical)));}
     #[test] fn config_rejects_overlapping_thresholds(){let mut c=Config::default();c.temperature.healthy_max=95.0;c.temperature.critical_min=90.0;assert!(normalize_config(c).is_err());}
+    #[test] fn memory_used_defaults_follow_memory_percent_thresholds(){let c=Config::default();let m=effective_memory_used_config(&c,8*1024*1024*1024);assert_eq!(m.healthy_max,8.0*1024.0*1024.0*1024.0*0.70);assert_eq!(m.critical_min,8.0*1024.0*1024.0*1024.0*0.90);}
     #[test] fn topbar_series_colors_each_sample_by_its_own_threshold_state(){
         let cfg=metric_config(60.0,90.0);
         let now=now_ms();
