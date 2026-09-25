@@ -251,6 +251,8 @@ fn health_color(h: Health, cfg: &MetricConfig) -> &str {
 fn effective_memory_used_config(config: &Config, total_bytes: u64) -> MetricConfig {
     if let Some(cfg) = &config.memory_used { return cfg.clone(); }
     let mut cfg = config.memory.clone();
+    cfg.show_topbar = false;
+    cfg.show_tray = false;
     cfg.healthy_max = total_bytes as f64 * config.memory.healthy_max / 100.0;
     cfg.critical_min = total_bytes as f64 * config.memory.critical_min / 100.0;
     cfg
