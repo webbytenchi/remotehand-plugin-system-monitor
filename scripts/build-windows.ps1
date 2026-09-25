@@ -46,7 +46,7 @@ Write-Host "  Size: $packageMiB MiB"
 
 
 # Create a portable validation ZIP beside the installable folder.
-$zipPath = Join-Path $repo "dist\remotehand-system-monitor-v0.1.0-test-windows-x86_64.zip"
+$zipPath = Join-Path $repo "dist\remotehand-system-monitor-v0.1.1-test-windows-x86_64.zip"
 if (Test-Path $zipPath) {
     Remove-Item -Force $zipPath
 }
