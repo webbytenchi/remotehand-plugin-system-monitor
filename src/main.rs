@@ -528,6 +528,24 @@ fn recent_series(history:&VecDeque<Sample>,selector:fn(&Sample)->Option<f64>,sec
         })
     }).collect()
 }
+fn gpu_value(gpu:&GpuTelemetry,kind:&str)->Option<f64>{
+    match kind{
+        "utilization"=>gpu.utilization_percent,
+        "dedicatedMemory"=>percent(gpu.dedicated_used_bytes,gpu.dedicated_total_bytes),
+        "sharedMemory"=>percent(gpu.shared_used_bytes,gpu.shared_total_bytes),
+        "temperature"=>gpu.temperature_c,
+        _=>None,
+    }
+}
+fn recent_gpu_series(history:&VecDeque<GpuSnapshot>,luid:&str,kind:&str,seconds:u64,cfg:&MetricConfig)->Vec<Value>{
+    let cutoff=now_ms().saturating_sub(seconds*1000);
+    history.iter().filter(|s|s.timestamp>=cutoff).filter_map(|s|{
+        let gpu=s.gpus.iter().find(|g|g.luid==luid)?;
+        let v=gpu_value(gpu,kind)?;
+        let h=health(Some(v),cfg);
+        Some(json!({"value":v,"tone":health_name(h),"color":health_color(h,cfg)}))
+    }).collect()
+}
 fn metric_topbar(id:&str,default_title:&str,value:Option<f64>,unit:&str,progress_percent:Option<f64>,series:Vec<Value>,h:Health,cfg:&MetricConfig,default_visualization:&str)->Value{
     let shown=value.map(|v|format!("{:.0}{unit}",v)).unwrap_or_else(||"—".into());
     let title=cfg.topbar_title.as_deref().filter(|v|!v.trim().is_empty()).unwrap_or(default_title);
@@ -564,12 +582,36 @@ fn surfaces(store:&Store)->(Value,Value){
     let mem_value=latest.map(|s|s.memory_percent);
     let cpu_h=health(cpu_value,&store.config.cpu);let mem_h=health(mem_value,&store.config.memory);
     let mut top=Vec::new();
-    if store.config.cpu.show_topbar{top.push(metric_topbar("cpu","CPU",cpu_value,"%",cpu_value,recent_series(&store.history,|s|Some(s.cpu_percent),60,&store.config.cpu),cpu_h,&store.config.cpu,"graph"));}
-    if store.config.memory.show_topbar{top.push(metric_topbar("memory","Memory",mem_value,"%",mem_value,recent_series(&store.history,|s|Some(s.memory_percent),60,&store.config.memory),mem_h,&store.config.memory,"bar"));}
-    let tray=vec![
+    let mut tray=vec![
         tray_item("cpu","CPU utilization",cpu_value,"%",cpu_h,&store.config.cpu),
         tray_item("memory","Memory utilization",mem_value,"%",mem_h,&store.config.memory),
     ];
+    if store.config.cpu.show_topbar{top.push(metric_topbar("cpu","CPU",cpu_value,"%",cpu_value,recent_series(&store.history,|s|Some(s.cpu_percent),60,&store.config.cpu),cpu_h,&store.config.cpu,"graph"));}
+    if store.config.memory.show_topbar{top.push(metric_topbar("memory","Memory",mem_value,"%",mem_value,recent_series(&store.history,|s|Some(s.memory_percent),60,&store.config.memory),mem_h,&store.config.memory,"bar"));}
+
+    for gpu in &store.gpu_latest {
+        let Some(cfg)=store.config.gpus.get(&gpu.luid) else {continue};
+        let metrics=[
+            ("utilization","%",gpu.utilization_percent,&cfg.utilization,"graph"),
+            ("dedicatedMemory","%",percent(gpu.dedicated_used_bytes,gpu.dedicated_total_bytes),&cfg.dedicated_memory,"bar"),
+            ("sharedMemory","%",percent(gpu.shared_used_bytes,gpu.shared_total_bytes),&cfg.shared_memory,"bar"),
+            ("temperature","°C",gpu.temperature_c,&cfg.temperature,"graph"),
+        ];
+        for (kind,unit,value,metric_cfg,default_visual) in metrics {
+            let h=health(value,metric_cfg);
+            let id=format!("gpu{}-{}",gpu.index,kind);
+            let default_title=match kind{
+                "utilization"=>format!("GPU {}",gpu.index),
+                "dedicatedMemory"=>format!("GPU {} VRAM",gpu.index),
+                "sharedMemory"=>format!("GPU {} Shared",gpu.index),
+                _=>format!("GPU {} Temp",gpu.index),
+            };
+            if metric_cfg.show_topbar{
+                top.push(metric_topbar(&id,&default_title,value,unit,value,recent_gpu_series(&store.gpu_history,&gpu.luid,kind,60,metric_cfg),h,metric_cfg,default_visual));
+            }
+            tray.push(tray_item(&id,&default_title,value,unit,h,metric_cfg));
+        }
+    }
     (json!({"items":top}),json!({"items":tray}))
 }
 fn tray_item(id:&str,title:&str,value:Option<f64>,unit:&str,h:Health,cfg:&MetricConfig)->Value{
@@ -595,7 +637,9 @@ fn status_value(store:&Store)->Value{
         "gpu":{
             "state":store.gpu_discovery_state,
             "error":store.gpu_discovery_error,
-            "adapters":store.gpu_adapters
+            "adapters":store.gpu_adapters,
+            "latest":store.gpu_latest,
+            "history":store.gpu_history
         }
     })
 }
