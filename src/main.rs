@@ -663,15 +663,32 @@ fn emit_alert(output:&mpsc::Sender<Value>,transition:&AlertTransition){
         })});
     }
 }
-fn csv_for(history:&VecDeque<Sample>,minutes:u64)->String{
+fn csv_for(history:&VecDeque<Sample>,gpu_history:&VecDeque<GpuSnapshot>,minutes:u64)->String{
     let cutoff=now_ms().saturating_sub(minutes.clamp(1,60)*60*1000);
     let max_cores=history.iter().map(|s|s.core_percent.len()).max().unwrap_or(0);
+    let adapters:Vec<GpuTelemetry>=gpu_history.back().map(|s|s.gpus.clone()).unwrap_or_default();
     let mut out=String::from("timestamp_ms,cpu_percent,memory_percent,memory_used_bytes,memory_available_bytes,memory_total_bytes");
-    for i in 0..max_cores{out.push_str(&format!(",core_{i}_percent"));}out.push('\n');
+    for i in 0..max_cores{out.push_str(&format!(",core_{i}_percent"));}
+    for gpu in &adapters{
+        out.push_str(&format!(",gpu_{}_utilization_percent,gpu_{}_dedicated_used_bytes,gpu_{}_shared_used_bytes,gpu_{}_temperature_c",gpu.index,gpu.index,gpu.index,gpu.index));
+    }
+    out.push('\n');
     for s in history.iter().filter(|s|s.timestamp>=cutoff){
         out.push_str(&format!("{},{:.2},",s.timestamp,s.cpu_percent));
         out.push_str(&format!("{:.2},{},{},{}",s.memory_percent,s.memory_used_bytes,s.memory_available_bytes,s.memory_total_bytes));
         for i in 0..max_cores{out.push(',');if let Some(v)=s.core_percent.get(i){out.push_str(&format!("{v:.2}"));}}
+        let gpu_sample=gpu_history.iter().rev().find(|g|g.timestamp<=s.timestamp);
+        for adapter in &adapters{
+            let gpu=gpu_sample.and_then(|g|g.gpus.iter().find(|x|x.luid==adapter.luid));
+            out.push(',');
+            if let Some(v)=gpu.and_then(|g|g.utilization_percent){out.push_str(&format!("{v:.2}"));}
+            out.push(',');
+            if let Some(v)=gpu.and_then(|g|g.dedicated_used_bytes){out.push_str(&v.to_string());}
+            out.push(',');
+            if let Some(v)=gpu.and_then(|g|g.shared_used_bytes){out.push_str(&v.to_string());}
+            out.push(',');
+            if let Some(v)=gpu.and_then(|g|g.temperature_c){out.push_str(&format!("{v:.1}"));}
+        }
         out.push('\n');
     }
     out
@@ -795,7 +812,7 @@ fn main()->Result<(),String>{
             "system.export.csv"=>{
                 let minutes=request.params.get("minutes").and_then(Value::as_u64).unwrap_or(15).clamp(1,60);
                 let suggested_name=request.params.get("suggestedName").and_then(Value::as_str).filter(|name| !name.trim().is_empty()).unwrap_or("system-monitor-history.csv");
-                let csv={let guard=store.lock().map_err(|_|"state lock poisoned".to_string())?;csv_for(&guard.history,minutes)};
+                let csv={let guard=store.lock().map_err(|_|"state lock poisoned".to_string())?;csv_for(&guard.history,&guard.gpu_history,minutes)};
                 match host_request(&mut input,&output_tx,&mut host_request_id,"file.save",json!({"suggestedName":suggested_name,"content":csv,"filters":[{"name":"CSV","extensions":["csv"]}]})){
                     Ok(result)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result,error:String::new()},
                     Err(error)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error}
