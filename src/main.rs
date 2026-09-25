@@ -136,7 +136,7 @@ fn metric_config(healthy_max: f64, critical_min: f64) -> MetricConfig {
         sound_file: None,
         warning_alert: Some(alert_delivery(true, true)),
         critical_alert: Some(alert_delivery(true, true)),
-        recovered_alert: Some(alert_delivery(false, true)),
+        recovered_alert: Some(alert_delivery(true, false)),
         healthy_max,
         critical_min,
         healthy_color: "#2f9e62".into(),
@@ -278,7 +278,7 @@ fn alert_delivery_for(cfg: &MetricConfig, state: Health) -> AlertDelivery {
     match state {
         Health::Warning => cfg.warning_alert.clone().unwrap_or_else(|| AlertDelivery { sound: cfg.sound, notification: cfg.notification, sound_file: cfg.sound_file.clone() }),
         Health::Critical => cfg.critical_alert.clone().unwrap_or_else(|| AlertDelivery { sound: cfg.sound, notification: cfg.notification, sound_file: cfg.sound_file.clone() }),
-        Health::Healthy => cfg.recovered_alert.clone().unwrap_or_else(|| alert_delivery(false, true)),
+        Health::Healthy => cfg.recovered_alert.clone().unwrap_or_else(|| alert_delivery(true, false)),
         Health::Unavailable => alert_delivery(false, false),
     }
 }
@@ -586,7 +586,7 @@ mod tests{
     #[test] fn config_rejects_overlapping_thresholds(){let mut c=Config::default();c.temperature.healthy_max=95.0;c.temperature.critical_min=90.0;assert!(normalize_config(c).is_err());}
     #[test] fn memory_used_defaults_follow_memory_percent_thresholds(){let c=Config::default();let m=effective_memory_used_config(&c,8*1024*1024*1024);assert_eq!(m.healthy_max,8.0*1024.0*1024.0*1024.0*0.70);assert_eq!(m.critical_min,8.0*1024.0*1024.0*1024.0*0.90);}
     #[test] fn recovered_transition_is_actionable_but_initial_healthy_is_not(){let c=metric_config(70.0,95.0);assert!(!AlertTransition::new("cpu","CPU",Some(10.0),Health::Unavailable,Health::Healthy,c.clone()).actionable());assert!(AlertTransition::new("cpu","CPU",Some(10.0),Health::Warning,Health::Healthy,c).actionable());}
-    #[test] fn default_recovered_alert_is_quiet_but_notifies(){let c=metric_config(70.0,95.0);let d=alert_delivery_for(&c,Health::Healthy);assert!(!d.sound);assert!(d.notification);}
+    #[test] fn default_recovered_alert_sounds_without_notification(){let c=metric_config(70.0,95.0);let d=alert_delivery_for(&c,Health::Healthy);assert!(d.sound);assert!(!d.notification);}
     #[test] fn topbar_series_colors_each_sample_by_its_own_threshold_state(){
         let cfg=metric_config(60.0,90.0);
         let now=now_ms();
