@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::{self, Read, Write};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
@@ -436,6 +436,69 @@ fn process_snapshot(system: &System, users: &Users, visible: &std::collections::
     }).collect()
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProcessNode {
+    #[serde(flatten)]
+    process: ProcessSnapshot,
+    children: Vec<ProcessNode>,
+    aggregate_cpu_percent: f64,
+    aggregate_memory_bytes: u64,
+}
+
+fn process_matches(p: &ProcessSnapshot, query: &str, filter: &str) -> bool {
+    let query_ok = query.is_empty()
+        || p.name.to_ascii_lowercase().contains(query)
+        || p.path.to_ascii_lowercase().contains(query)
+        || p.command_line.to_ascii_lowercase().contains(query)
+        || p.user.to_ascii_lowercase().contains(query)
+        || p.pid.to_string().contains(query);
+    let filter_ok = match filter {
+        "background" => !p.window_visible,
+        "visible" => p.window_visible,
+        "highCpu" => p.cpu_percent >= 10.0,
+        "highMemory" => p.memory_bytes >= 512 * 1024 * 1024,
+        "gpuActive" => p.gpu_percent.unwrap_or(0.0) > 0.0,
+        _ => true,
+    };
+    query_ok && filter_ok
+}
+
+fn build_process_node(
+    pid: u32,
+    by_pid: &HashMap<u32, ProcessSnapshot>,
+    children_by_parent: &HashMap<u32, Vec<u32>>,
+    included: &HashSet<u32>,
+    sort: &str,
+    direction: &str,
+) -> Option<ProcessNode> {
+    if !included.contains(&pid) { return None; }
+    let process=by_pid.get(&pid)?.clone();
+    let mut children:Vec<ProcessNode>=children_by_parent.get(&pid).into_iter().flatten()
+        .filter_map(|child|build_process_node(*child,by_pid,children_by_parent,included,sort,direction))
+        .collect();
+    sort_process_nodes(&mut children,sort,direction);
+    let aggregate_cpu_percent=process.cpu_percent+children.iter().map(|x|x.aggregate_cpu_percent).sum::<f64>();
+    let aggregate_memory_bytes=process.memory_bytes+children.iter().map(|x|x.aggregate_memory_bytes).sum::<u64>();
+    Some(ProcessNode{process,children,aggregate_cpu_percent,aggregate_memory_bytes})
+}
+
+fn sort_process_nodes(nodes:&mut [ProcessNode], sort:&str, direction:&str){
+    nodes.sort_by(|a,b|{
+        let ord=match sort{
+            "name"=>a.process.name.to_ascii_lowercase().cmp(&b.process.name.to_ascii_lowercase()),
+            "pid"=>a.process.pid.cmp(&b.process.pid),
+            "memory"=>a.aggregate_memory_bytes.cmp(&b.aggregate_memory_bytes),
+            "gpu"=>a.process.gpu_percent.unwrap_or(0.0).total_cmp(&b.process.gpu_percent.unwrap_or(0.0)),
+            "user"=>a.process.user.to_ascii_lowercase().cmp(&b.process.user.to_ascii_lowercase()),
+            "started"=>a.process.start_time.cmp(&b.process.start_time),
+            _=>a.aggregate_cpu_percent.total_cmp(&b.aggregate_cpu_percent),
+        };
+        let ord=if direction=="asc"{ord}else{ord.reverse()};
+        ord.then_with(||a.process.pid.cmp(&b.process.pid))
+    });
+}
+
 fn process_list_value(rows: &[ProcessSnapshot], params: &Value, updated_at: u64) -> Value {
     let query = params.get("query").and_then(Value::as_str).unwrap_or("").trim().to_ascii_lowercase();
     let filter = params.get("filter").and_then(Value::as_str).unwrap_or("all");
@@ -448,56 +511,59 @@ fn process_list_value(rows: &[ProcessSnapshot], params: &Value, updated_at: u64)
     };
     let mut page = params.get("page").and_then(Value::as_u64).unwrap_or(1).max(1) as usize;
 
-    let mut filtered: Vec<ProcessSnapshot> = rows.iter().filter(|p| {
-        let query_ok = query.is_empty()
-            || p.name.to_ascii_lowercase().contains(&query)
-            || p.path.to_ascii_lowercase().contains(&query)
-            || p.command_line.to_ascii_lowercase().contains(&query)
-            || p.user.to_ascii_lowercase().contains(&query)
-            || p.pid.to_string().contains(&query);
-        let filter_ok = match filter {
-            "background" => !p.window_visible,
-            "visible" => p.window_visible,
-            "highCpu" => p.cpu_percent >= 10.0,
-            "highMemory" => p.memory_bytes >= 512 * 1024 * 1024,
-            "gpuActive" => p.gpu_percent.unwrap_or(0.0) > 0.0,
-            _ => true,
-        };
-        query_ok && filter_ok
-    }).cloned().collect();
+    let by_pid:HashMap<u32,ProcessSnapshot>=rows.iter().cloned().map(|p|(p.pid,p)).collect();
+    let mut children_by_parent:HashMap<u32,Vec<u32>>=HashMap::new();
+    for p in rows{
+        if let Some(parent)=p.parent_pid{
+            if parent!=p.pid && by_pid.contains_key(&parent){
+                children_by_parent.entry(parent).or_default().push(p.pid);
+            }
+        }
+    }
 
-    filtered.sort_by(|a,b| {
-        let ord = match sort {
-            "name" => a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()),
-            "pid" => a.pid.cmp(&b.pid),
-            "memory" => a.memory_bytes.cmp(&b.memory_bytes),
-            "gpu" => a.gpu_percent.unwrap_or(0.0).total_cmp(&b.gpu_percent.unwrap_or(0.0)),
-            "user" => a.user.to_ascii_lowercase().cmp(&b.user.to_ascii_lowercase()),
-            "started" => a.start_time.cmp(&b.start_time),
-            _ => a.cpu_percent.total_cmp(&b.cpu_percent),
-        };
-        let ord = if direction == "asc" { ord } else { ord.reverse() };
-        ord.then_with(|| a.pid.cmp(&b.pid))
-    });
+    let direct:HashSet<u32>=rows.iter().filter(|p|process_matches(p,&query,filter)).map(|p|p.pid).collect();
+    let mut included=direct.clone();
+    for pid in direct{
+        let mut cursor=by_pid.get(&pid).and_then(|p|p.parent_pid);
+        let mut guard=0usize;
+        while let Some(parent)=cursor{
+            if guard>64 || !by_pid.contains_key(&parent){break;}
+            included.insert(parent);
+            cursor=by_pid.get(&parent).and_then(|p|p.parent_pid);
+            guard+=1;
+        }
+    }
 
-    let total = filtered.len();
-    let page_count = ((total + page_size - 1) / page_size).max(1);
-    page = page.min(page_count);
-    let start = (page - 1) * page_size;
-    let end = (start + page_size).min(total);
-    let page_rows = if start < total { filtered[start..end].to_vec() } else { Vec::new() };
+    let mut roots:Vec<ProcessNode>=rows.iter()
+        .filter(|p|included.contains(&p.pid))
+        .filter(|p|p.parent_pid.is_none() || !included.contains(&p.parent_pid.unwrap_or_default()))
+        .filter_map(|p|build_process_node(p.pid,&by_pid,&children_by_parent,&included,sort,direction))
+        .collect();
+    sort_process_nodes(&mut roots,sort,direction);
+
+    fn count_nodes(nodes:&[ProcessNode])->usize{nodes.iter().map(|n|1+count_nodes(&n.children)).sum()}
+    let total_processes=count_nodes(&roots);
+    let total_groups=roots.len();
+    let page_count=((total_groups+page_size-1)/page_size).max(1);
+    page=page.min(page_count);
+    let start=(page-1)*page_size;
+    let end=(start+page_size).min(total_groups);
+    let page_rows=if start<total_groups{roots[start..end].to_vec()}else{Vec::new()};
 
     json!({
-        "rows": page_rows,
-        "total": total,
-        "page": page,
-        "pageSize": page_size,
-        "pageCount": page_count,
-        "sort": sort,
-        "direction": direction,
-        "updatedAt": updated_at
+        "rows":page_rows,
+        "total":total_processes,
+        "totalGroups":total_groups,
+        "page":page,
+        "pageSize":page_size,
+        "pageCount":page_count,
+        "sort":sort,
+        "direction":direction,
+        "updatedAt":updated_at,
+        "searchActive":!query.is_empty() || filter!="all"
     })
 }
+
 
 struct Store {
     config: Config,
@@ -509,6 +575,7 @@ struct Store {
     gpu_discovery_error: Option<String>,
     processes: Vec<ProcessSnapshot>,
     processes_updated_at: u64,
+    process_icon_cache: BTreeMap<String, Option<String>>,
     cpu_tracker: TransitionTracker,
     temp_tracker: TransitionTracker,
     memory_tracker: TransitionTracker,
@@ -526,6 +593,7 @@ impl Store {
             gpu_discovery_error: None,
             processes: Vec::new(),
             processes_updated_at: 0,
+            process_icon_cache: BTreeMap::new(),
             cpu_tracker: Default::default(),
             temp_tracker: Default::default(),
             memory_tracker: Default::default(),
@@ -946,6 +1014,23 @@ fn main()->Result<(),String>{
                 let guard=store.lock().map_err(|_|"state lock poisoned".to_string())?;
                 PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:process_list_value(&guard.processes,&request.params,guard.processes_updated_at),error:String::new()}
             }
+            "system.process.icon"=>{
+                let path=request.params.get("path").and_then(Value::as_str).unwrap_or("").trim().to_string();
+                if path.is_empty(){
+                    PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"dataUrl":null}),error:String::new()}
+                }else{
+                    let cached={store.lock().map_err(|_|"state lock poisoned".to_string())?.process_icon_cache.get(&path).cloned()};
+                    let data_url=match cached{
+                        Some(v)=>v,
+                        None=>{
+                            let v=process_windows::icon_data_url(&path);
+                            if let Ok(mut guard)=store.lock(){guard.process_icon_cache.insert(path.clone(),v.clone());}
+                            v
+                        }
+                    };
+                    PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"dataUrl":data_url}),error:String::new()}
+                }
+            }
             "system.config.set"=>{
                 let parsed:Result<Config,_>=serde_json::from_value(request.params.clone());
                 match parsed.map_err(|e|format!("invalid config: {e}")).and_then(normalize_config){
@@ -1015,6 +1100,17 @@ mod tests{
         assert_eq!(value["total"],2);
         assert_eq!(value["page"],1);
         assert_eq!(value["direction"],"desc");
+    }
+    #[test] fn process_list_keeps_parent_context_for_matching_child(){
+        let rows=vec![
+            ProcessSnapshot{pid:100,name:"parent.exe".into(),cpu_percent:1.0,memory_bytes:10,gpu_percent:None,user:"u".into(),start_time:1,parent_pid:None,path:String::new(),command_line:String::new(),status:"Run".into(),window_visible:true},
+            ProcessSnapshot{pid:101,name:"remote-child.exe".into(),cpu_percent:2.0,memory_bytes:20,gpu_percent:None,user:"u".into(),start_time:2,parent_pid:Some(100),path:String::new(),command_line:String::new(),status:"Run".into(),window_visible:false},
+        ];
+        let value=process_list_value(&rows,&json!({"query":"remote"}),123);
+        assert_eq!(value["total"],2);
+        assert_eq!(value["totalGroups"],1);
+        assert_eq!(value["rows"][0]["pid"],100);
+        assert_eq!(value["rows"][0]["children"][0]["pid"],101);
     }
     #[test] fn process_list_searches_background_processes(){
         let rows=vec![
