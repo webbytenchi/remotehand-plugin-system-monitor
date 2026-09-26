@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.3.0
+
+Processes milestone for the Windows System Monitor plugin.
+
+### Added
+- Processes tab with full Windows process enumeration, including background/headless processes.
+- Search across process name, PID, path, command line, and user while retaining matching parent context.
+- Expandable parent/child process hierarchy with optional compact launcher-chain folding.
+- Lazy/cached executable icons.
+- Sortable and resizable process columns with persisted widths.
+- All, Background, Visible, and GPU-active process filters.
+- Top-level process-group pagination with selectable group counts.
+- Process Details dialog.
+- Open file location action.
+- Copy submenu for process name, PID, executable path, and command line.
+- Guarded End task action with a custom confirmation dialog and PID/name reuse protection.
+- Plugin-owned themed sidebar icon packaged with the plugin.
+
+### Changed
+- Process tree pagination is based on top-level groups so expanded trees remain structurally coherent.
+- Process search results remain collapsible and expandable.
+- Compact-tree status reports hidden launcher wrappers.
+
+### Removed
+- Removed the experimental Open / Focus window action because Windows foreground activation was not reliable enough across window-hosting models.
+
+### Deferred
+- Per-process GPU attribution.
+- Publisher and digital-signature metadata.
+- End process tree.
+
 ## v0.2.1
 
 Bugfix release for alert delivery setting persistence.
