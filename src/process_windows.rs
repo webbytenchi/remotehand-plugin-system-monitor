@@ -89,18 +89,27 @@ mod imp {
 
     struct FocusTarget {
         pid: u32,
-        hwnd: Option<HWND>,
+        preferred: Option<HWND>,
+        fallback: Option<HWND>,
     }
 
     unsafe extern "system" fn enum_focus_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
         let target = &mut *(lparam.0 as *mut FocusTarget);
-        if target.hwnd.is_some() || !IsWindowVisible(hwnd).as_bool() {
+        if !IsWindowVisible(hwnd).as_bool() {
             return BOOL(1);
         }
         let mut pid = 0u32;
         GetWindowThreadProcessId(hwnd, Some(&mut pid));
-        if pid == target.pid {
-            target.hwnd = Some(hwnd);
+        if pid != target.pid {
+            return BOOL(1);
+        }
+        if target.fallback.is_none() {
+            target.fallback = Some(hwnd);
+        }
+        let unowned = GetWindow(hwnd, GW_OWNER).map(|owner| owner.0.is_null()).unwrap_or(true);
+        let titled = GetWindowTextLengthW(hwnd) > 0;
+        if unowned && titled {
+            target.preferred = Some(hwnd);
             return BOOL(0);
         }
         BOOL(1)
@@ -110,13 +119,19 @@ mod imp {
         if pid == 0 {
             return Err("process has no focusable window".to_string());
         }
-        let mut target = FocusTarget { pid, hwnd: None };
+        let mut target = FocusTarget { pid, preferred: None, fallback: None };
         unsafe {
             let _ = EnumWindows(Some(enum_focus_window), LPARAM((&mut target as *mut FocusTarget) as isize));
-            let hwnd = target.hwnd.ok_or_else(|| "process has no visible window".to_string())?;
+            let hwnd = target.preferred.or(target.fallback).ok_or_else(|| "process has no visible window".to_string())?;
             if IsIconic(hwnd).as_bool() {
                 let _ = ShowWindow(hwnd, SW_RESTORE);
             }
+
+            // First make the target visibly rise even on systems that enforce
+            // foreground-lock restrictions, then ask Windows for keyboard focus.
+            let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+            let _ = SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+
             let foreground = GetForegroundWindow();
             let current_thread = GetCurrentThreadId();
             let target_thread = GetWindowThreadProcessId(hwnd, None);
@@ -128,15 +143,12 @@ mod imp {
                 let _ = AttachThreadInput(current_thread, target_thread, true);
             }
             let _ = BringWindowToTop(hwnd);
-            let focused = SetForegroundWindow(hwnd).as_bool();
+            let _ = SetForegroundWindow(hwnd);
             if target_thread != 0 && target_thread != current_thread {
                 let _ = AttachThreadInput(current_thread, target_thread, false);
             }
             if foreground_thread != 0 && foreground_thread != current_thread {
                 let _ = AttachThreadInput(current_thread, foreground_thread, false);
-            }
-            if !focused {
-                return Err("Windows kept the current foreground window; the target was restored but could not take keyboard focus".to_string());
             }
         }
         Ok(())
