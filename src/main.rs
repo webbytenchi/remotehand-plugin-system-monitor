@@ -5,9 +5,10 @@ use std::io::{self, Read, Write};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use sysinfo::System;
+use sysinfo::{ProcessesToUpdate, System, Users};
 
 mod gpu_windows;
+mod process_windows;
 use gpu_windows::{GpuAdapterInfo, GpuSampler, GpuTelemetry};
 
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
@@ -393,6 +394,111 @@ struct GpuSnapshot {
     gpus: Vec<GpuTelemetry>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProcessSnapshot {
+    pid: u32,
+    name: String,
+    cpu_percent: f64,
+    memory_bytes: u64,
+    gpu_percent: Option<f64>,
+    user: String,
+    start_time: u64,
+    parent_pid: Option<u32>,
+    path: String,
+    command_line: String,
+    status: String,
+    window_visible: bool,
+}
+
+fn process_snapshot(system: &System, users: &Users, visible: &std::collections::HashSet<u32>) -> Vec<ProcessSnapshot> {
+    let cpu_count = system.cpus().len().max(1) as f64;
+    system.processes().values().map(|p| {
+        let pid = p.pid().as_u32();
+        let user = p.user_id()
+            .and_then(|id| users.get_user_by_id(id))
+            .map(|u| u.name().to_string())
+            .unwrap_or_default();
+        ProcessSnapshot {
+            pid,
+            name: p.name().to_string_lossy().into_owned(),
+            cpu_percent: (p.cpu_usage() as f64 / cpu_count).clamp(0.0, 100.0),
+            memory_bytes: p.memory(),
+            gpu_percent: None,
+            user,
+            start_time: p.start_time(),
+            parent_pid: p.parent().map(|x| x.as_u32()),
+            path: p.exe().map(|x| x.to_string_lossy().into_owned()).unwrap_or_default(),
+            command_line: p.cmd().iter().map(|x| x.to_string_lossy()).collect::<Vec<_>>().join(" "),
+            status: format!("{:?}", p.status()),
+            window_visible: visible.contains(&pid),
+        }
+    }).collect()
+}
+
+fn process_list_value(rows: &[ProcessSnapshot], params: &Value, updated_at: u64) -> Value {
+    let query = params.get("query").and_then(Value::as_str).unwrap_or("").trim().to_ascii_lowercase();
+    let filter = params.get("filter").and_then(Value::as_str).unwrap_or("all");
+    let sort = params.get("sort").and_then(Value::as_str).unwrap_or("cpu");
+    let direction = params.get("direction").and_then(Value::as_str).unwrap_or("desc");
+    let page_size = match params.get("pageSize").and_then(Value::as_u64).unwrap_or(50) {
+        25 => 25usize,
+        100 => 100usize,
+        _ => 50usize,
+    };
+    let mut page = params.get("page").and_then(Value::as_u64).unwrap_or(1).max(1) as usize;
+
+    let mut filtered: Vec<ProcessSnapshot> = rows.iter().filter(|p| {
+        let query_ok = query.is_empty()
+            || p.name.to_ascii_lowercase().contains(&query)
+            || p.path.to_ascii_lowercase().contains(&query)
+            || p.command_line.to_ascii_lowercase().contains(&query)
+            || p.user.to_ascii_lowercase().contains(&query)
+            || p.pid.to_string().contains(&query);
+        let filter_ok = match filter {
+            "background" => !p.window_visible,
+            "visible" => p.window_visible,
+            "highCpu" => p.cpu_percent >= 10.0,
+            "highMemory" => p.memory_bytes >= 512 * 1024 * 1024,
+            "gpuActive" => p.gpu_percent.unwrap_or(0.0) > 0.0,
+            _ => true,
+        };
+        query_ok && filter_ok
+    }).cloned().collect();
+
+    filtered.sort_by(|a,b| {
+        let ord = match sort {
+            "name" => a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()),
+            "pid" => a.pid.cmp(&b.pid),
+            "memory" => a.memory_bytes.cmp(&b.memory_bytes),
+            "gpu" => a.gpu_percent.unwrap_or(0.0).total_cmp(&b.gpu_percent.unwrap_or(0.0)),
+            "user" => a.user.to_ascii_lowercase().cmp(&b.user.to_ascii_lowercase()),
+            "started" => a.start_time.cmp(&b.start_time),
+            _ => a.cpu_percent.total_cmp(&b.cpu_percent),
+        };
+        let ord = if direction == "asc" { ord } else { ord.reverse() };
+        ord.then_with(|| a.pid.cmp(&b.pid))
+    });
+
+    let total = filtered.len();
+    let page_count = ((total + page_size - 1) / page_size).max(1);
+    page = page.min(page_count);
+    let start = (page - 1) * page_size;
+    let end = (start + page_size).min(total);
+    let page_rows = if start < total { filtered[start..end].to_vec() } else { Vec::new() };
+
+    json!({
+        "rows": page_rows,
+        "total": total,
+        "page": page,
+        "pageSize": page_size,
+        "pageCount": page_count,
+        "sort": sort,
+        "direction": direction,
+        "updatedAt": updated_at
+    })
+}
+
 struct Store {
     config: Config,
     history: VecDeque<Sample>,
@@ -401,6 +507,8 @@ struct Store {
     gpu_adapters: Vec<GpuAdapterInfo>,
     gpu_discovery_state: String,
     gpu_discovery_error: Option<String>,
+    processes: Vec<ProcessSnapshot>,
+    processes_updated_at: u64,
     cpu_tracker: TransitionTracker,
     temp_tracker: TransitionTracker,
     memory_tracker: TransitionTracker,
@@ -416,6 +524,8 @@ impl Store {
             gpu_adapters: Vec::new(),
             gpu_discovery_state: "pending".into(),
             gpu_discovery_error: None,
+            processes: Vec::new(),
+            processes_updated_at: 0,
             cpu_tracker: Default::default(),
             temp_tracker: Default::default(),
             memory_tracker: Default::default(),
@@ -793,6 +903,35 @@ fn main()->Result<(),String>{
         });
     }
 
+    {
+        let process_store=Arc::clone(&store);
+        let process_output=output_tx.clone();
+        thread::spawn(move||{
+            let mut system=System::new_all();
+            let mut users=Users::new_with_refreshed_list();
+            thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
+            loop{
+                system.refresh_processes(ProcessesToUpdate::All,true);
+                users.refresh();
+                let visible=process_windows::visible_process_ids();
+                let snapshots=process_snapshot(&system,&users,&visible);
+                let count=snapshots.len();
+                let updated_at=now_ms();
+                if let Ok(mut guard)=process_store.lock(){
+                    guard.processes=snapshots;
+                    guard.processes_updated_at=updated_at;
+                }else{return;}
+                let _=send_outbound(&process_output,PluginEvent{
+                    message_type:"plugin.event",
+                    event:"system.processes.updated",
+                    payload:json!({"count":count,"updatedAt":updated_at})
+                });
+                let seconds=match process_store.lock(){Ok(g)=>g.config.sample_seconds,Err(_)=>return};
+                thread::sleep(Duration::from_secs(seconds));
+            }
+        });
+    }
+
     send_outbound(&output_tx,PluginEvent{message_type:"plugin.event",event:"system.ready",payload:json!({"version":env!("CARGO_PKG_VERSION")})})?;
 
     loop{
@@ -802,6 +941,10 @@ fn main()->Result<(),String>{
             "system.status"=>{
                 let guard=store.lock().map_err(|_|"state lock poisoned".to_string())?;
                 PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:status_value(&guard),error:String::new()}
+            }
+            "system.processes.list"=>{
+                let guard=store.lock().map_err(|_|"state lock poisoned".to_string())?;
+                PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:process_list_value(&guard.processes,&request.params,guard.processes_updated_at),error:String::new()}
             }
             "system.config.set"=>{
                 let parsed:Result<Config,_>=serde_json::from_value(request.params.clone());
@@ -861,6 +1004,26 @@ mod tests{
         let ui=include_str!("../ui/index.html");
         assert!(ui.contains("box.querySelectorAll(\"[data-path][data-alert][data-alert-field]\")"));
         assert!(!ui.contains("if(i.dataset.alert){var alert=target[i.dataset.alert]"));
+    }
+    #[test] fn process_list_defaults_to_cpu_descending_and_paginates(){
+        let rows=vec![
+            ProcessSnapshot{pid:1,name:"low.exe".into(),cpu_percent:2.0,memory_bytes:10,gpu_percent:None,user:"u".into(),start_time:1,parent_pid:None,path:String::new(),command_line:String::new(),status:"Run".into(),window_visible:false},
+            ProcessSnapshot{pid:2,name:"high.exe".into(),cpu_percent:80.0,memory_bytes:20,gpu_percent:None,user:"u".into(),start_time:2,parent_pid:None,path:String::new(),command_line:String::new(),status:"Run".into(),window_visible:true},
+        ];
+        let value=process_list_value(&rows,&json!({"page":1,"pageSize":25}),123);
+        assert_eq!(value["rows"][0]["pid"],2);
+        assert_eq!(value["total"],2);
+        assert_eq!(value["page"],1);
+        assert_eq!(value["direction"],"desc");
+    }
+    #[test] fn process_list_searches_background_processes(){
+        let rows=vec![
+            ProcessSnapshot{pid:11,name:"visible.exe".into(),cpu_percent:1.0,memory_bytes:1,gpu_percent:None,user:"Papa".into(),start_time:1,parent_pid:None,path:"C:\\Visible.exe".into(),command_line:String::new(),status:"Run".into(),window_visible:true},
+            ProcessSnapshot{pid:12,name:"worker.exe".into(),cpu_percent:1.0,memory_bytes:1,gpu_percent:None,user:"Papa".into(),start_time:1,parent_pid:None,path:"C:\\Tools\\worker.exe".into(),command_line:"worker.exe --quiet".into(),status:"Run".into(),window_visible:false},
+        ];
+        let value=process_list_value(&rows,&json!({"filter":"background","query":"worker"}),123);
+        assert_eq!(value["total"],1);
+        assert_eq!(value["rows"][0]["pid"],12);
     }
     #[test] fn visualization_defaults_match_metric_behavior(){let c=Config::default();assert_eq!(c.cpu.overview_visualization.as_deref(),Some("graph"));assert_eq!(c.cpu.topbar_visualization.as_deref(),Some("graph"));assert_eq!(c.memory.overview_visualization.as_deref(),Some("bar"));assert_eq!(c.memory.topbar_visualization.as_deref(),Some("bar"));}
     #[test] fn gpu_defaults_are_per_adapter_and_optional_temperature(){
