@@ -16,9 +16,9 @@ mod imp {
         BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HGDIOBJ,
     };
     use windows::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_SMALLICON};
-    use windows::Win32::System::Threading::GetCurrentThreadId;
+    use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
     use windows::Win32::UI::WindowsAndMessaging::{
-        AttachThreadInput, BringWindowToTop, DestroyIcon, DrawIconEx, EnumWindows,
+        BringWindowToTop, DestroyIcon, DrawIconEx, EnumWindows,
         GetForegroundWindow, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
         SetForegroundWindow, ShowWindow, DI_NORMAL, SW_RESTORE,
     };
