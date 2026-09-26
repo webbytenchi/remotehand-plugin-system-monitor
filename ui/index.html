@@ -33,7 +33,7 @@
 <div class="table-wrap"><table id="processTable" class="process-table"><colgroup><col data-process-col="name"><col data-process-col="pid"><col data-process-col="cpu"><col data-process-col="memory"><col data-process-col="gpu"><col data-process-col="user"><col data-process-col="started"></colgroup><thead><tr>
 <th data-process-sort="name">Process</th><th data-process-sort="pid">PID</th><th data-process-sort="cpu">CPU %</th><th data-process-sort="memory">Memory</th><th data-process-sort="gpu">GPU %</th><th data-process-sort="user">User</th><th data-process-sort="started">Started</th>
 </tr></thead><tbody id="processRows"></tbody></table></div>
-<div class="process-pager"><button id="processPrev" type="button">Previous</button><span id="processPage">Page 1 of 1</span><button id="processNext" type="button">Next</button></div>
+<div class="process-pager"><span id="processPagerHint" class="process-compact-status"></span><button id="processPrev" type="button">Previous</button><span id="processPage">Page 1 of 1</span><button id="processNext" type="button">Next</button></div>
 </div>
 </section>
 <section id="settingsPanel" class="panel">
@@ -246,7 +246,7 @@ var label=document.createElement("button");label.type="button";label.className="
 wrap.append(icon,label);if(p._hiddenLaunchers){var launch=document.createElement("span");launch.className="process-launcher-count";launch.textContent="via "+p._hiddenLaunchers+" launcher"+(p._hiddenLaunchers===1?"":"s");wrap.appendChild(launch)}if(hasChildren){var count=document.createElement("span");count.className="process-group-count";count.textContent="("+processNodeCount(p)+")";wrap.appendChild(count)}nameTd.appendChild(wrap);tr.appendChild(nameTd);
 var cpu=hasChildren?Number(p.aggregateCpuPercent||0):Number(p.cpuPercent||0),mem=hasChildren?Number(p.aggregateMemoryBytes||0):Number(p.memoryBytes||0);
 td(String(p.pid));td(cpu.toFixed(1));td(bytes(mem));td(p.gpuPercent==null?"—":Number(p.gpuPercent).toFixed(1));td(p.user||"—",p.user||"");td(processStarted(p.startTime));body.appendChild(tr);
-
+if(expanded&&hasChildren)(p.children||[]).forEach(function(child){var compact=compactProcessChild(child),shown=compact.node;if(compact.hidden)shown=Object.assign({},shown,{_hiddenLaunchers:compact.hidden});renderProcessNode(body,shown,depth+1)});
 }
 function renderProcesses(){
 var body=el("processRows");if(!body)return;body.innerHTML="";
@@ -259,7 +259,7 @@ var visible=flattenVisibleProcessRows(roots.slice(start,end),0,[]);
 el("processSummary").textContent=processState.total+" process"+(processState.total===1?"":"es")+" · "+processState.totalGroups+" group"+(processState.totalGroups===1?"":"s");
 var hiddenLaunchers=processState.compactTree?processCompactHiddenCount(processState.rows):0;
 el("processCompactStatus").textContent=processState.compactTree?"("+hiddenLaunchers+" launcher"+(hiddenLaunchers===1?"":"s")+" hidden)":"";
-el("processPage").textContent="Page "+processState.page+" of "+processState.pageCount;el("processPrev").disabled=processState.page<=1;el("processNext").disabled=processState.page>=processState.pageCount;
+el("processPagerHint").textContent=processState.totalGroups+" total group"+(processState.totalGroups===1?"":"s")+" · "+processState.pageSize+" per page";el("processPage").textContent="Page "+processState.page+" of "+processState.pageCount;el("processPrev").disabled=processState.page<=1;el("processNext").disabled=processState.page>=processState.pageCount;
 el("processUpdated").textContent=processState.updatedAt?"Updated "+new Date(processState.updatedAt).toLocaleTimeString():"";
 document.querySelectorAll("[data-process-sort]").forEach(function(th){var key=th.dataset.processSort,labels={name:"Process",pid:"PID",cpu:"CPU %",memory:"Memory",gpu:"GPU %",user:"User",started:"Started"},handle=th.querySelector(".process-col-resizer");th.childNodes[0].nodeValue=processSortLabel(key,labels[key]);if(handle&&!th.contains(handle))th.appendChild(handle)});
 applyProcessColumnWidths();
