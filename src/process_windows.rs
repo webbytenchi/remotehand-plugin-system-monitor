@@ -17,7 +17,8 @@ mod imp {
     };
     use windows::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_SMALLICON};
     use windows::Win32::UI::WindowsAndMessaging::{
-        DestroyIcon, DrawIconEx, EnumWindows, GetWindowThreadProcessId, IsWindowVisible, DI_NORMAL,
+        BringWindowToTop, DestroyIcon, DrawIconEx, EnumWindows, GetWindowThreadProcessId,
+        IsIconic, IsWindowVisible, SetForegroundWindow, ShowWindow, DI_NORMAL, SW_RESTORE,
     };
 
     unsafe extern "system" fn enum_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
@@ -84,6 +85,56 @@ mod imp {
         }
     }
 
+    struct FocusTarget {
+        pid: u32,
+        hwnd: Option<HWND>,
+    }
+
+    unsafe extern "system" fn enum_focus_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let target = &mut *(lparam.0 as *mut FocusTarget);
+        if target.hwnd.is_some() || !IsWindowVisible(hwnd).as_bool() {
+            return BOOL(1);
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == target.pid {
+            target.hwnd = Some(hwnd);
+            return BOOL(0);
+        }
+        BOOL(1)
+    }
+
+    pub fn focus_process_window(pid: u32) -> Result<(), String> {
+        if pid == 0 {
+            return Err("process has no focusable window".to_string());
+        }
+        let mut target = FocusTarget { pid, hwnd: None };
+        unsafe {
+            let _ = EnumWindows(Some(enum_focus_window), LPARAM((&mut target as *mut FocusTarget) as isize));
+            let hwnd = target.hwnd.ok_or_else(|| "process has no visible window".to_string())?;
+            if IsIconic(hwnd).as_bool() {
+                let _ = ShowWindow(hwnd, SW_RESTORE);
+            }
+            let _ = BringWindowToTop(hwnd);
+            if !SetForegroundWindow(hwnd).as_bool() {
+                return Err("Windows did not allow the process window to take focus".to_string());
+            }
+        }
+        Ok(())
+    }
+
+    pub fn open_file_location(path: &str) -> Result<(), String> {
+        let path = Path::new(path);
+        if !path.is_file() {
+            return Err("process executable path is unavailable".to_string());
+        }
+        std::process::Command::new("explorer.exe")
+            .arg(format!("/select,{}", path.display()))
+            .spawn()
+            .map_err(|error| format!("failed to open file location: {error}"))?;
+        Ok(())
+    }
+
     pub fn visible_process_ids() -> HashSet<u32> {
         let mut out = HashSet::new();
         unsafe {
@@ -94,7 +145,7 @@ mod imp {
 }
 
 #[cfg(windows)]
-pub use imp::{icon_data_url, visible_process_ids};
+pub use imp::{focus_process_window, icon_data_url, open_file_location, visible_process_ids};
 
 #[cfg(not(windows))]
 pub fn visible_process_ids() -> HashSet<u32> {
@@ -104,4 +155,14 @@ pub fn visible_process_ids() -> HashSet<u32> {
 #[cfg(not(windows))]
 pub fn icon_data_url(_: &str) -> Option<String> {
     None
+}
+
+#[cfg(not(windows))]
+pub fn focus_process_window(_: u32) -> Result<(), String> {
+    Err("process focus is only supported on Windows".to_string())
+}
+
+#[cfg(not(windows))]
+pub fn open_file_location(_: &str) -> Result<(), String> {
+    Err("opening process file locations is only supported on Windows".to_string())
 }
