@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.3.1
+
+Focused GPU-surface consistency bugfix.
+
+### Fixed
+- Applied the existing duplicate/inactive GPU-adapter visibility rule to top-bar and system-tray contributions.
+- Kept Overview, Settings, top-bar, and tray GPU visibility consistent.
+- Prevented a silent duplicate GPU LUID from remaining visible in the top bar without a corresponding Settings control.
+- Preserved legitimate idle GPUs at 0% utilization; only the duplicate logical adapter without meaningful telemetry is suppressed when the match is unambiguous.
+- Added regression tests for duplicate-LUID filtering and emitted top-bar/tray surfaces.
+
 ## v0.3.0
 
 Processes milestone for the Windows System Monitor plugin.
