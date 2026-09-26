@@ -13,6 +13,7 @@
   },
   "permissions": [
     "files.save",
+    "clipboard.write",
     "storage.plugin",
     "tray.contribute",
     "notifications.show"
