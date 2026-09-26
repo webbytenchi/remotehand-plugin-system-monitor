@@ -1292,6 +1292,53 @@ mod tests{
         assert!(visible.contains("B"));
     }
 
+    #[test] fn hidden_duplicate_gpu_is_not_emitted_to_topbar_or_tray(){
+        fn adapter(index:u32,luid:&str)->GpuAdapterInfo{
+            GpuAdapterInfo{
+                index,
+                name:"Intel(R) Iris(R) Xe Graphics".into(),
+                luid:luid.into(),
+                vendor_id:0x8086,
+                device_id:0x1234,
+                subsystem_id:0x5678,
+                revision:1,
+                dedicated_video_memory_bytes:0,
+                dedicated_system_memory_bytes:0,
+                shared_system_memory_bytes:8*1024*1024*1024,
+                software:false,
+            }
+        }
+        fn telemetry(index:u32,luid:&str,util:Option<f64>)->GpuTelemetry{
+            GpuTelemetry{
+                index,
+                name:"Intel(R) Iris(R) Xe Graphics".into(),
+                luid:luid.into(),
+                utilization_percent:util,
+                engines:vec![],
+                dedicated_used_bytes:None,
+                dedicated_total_bytes:0,
+                shared_used_bytes:None,
+                shared_total_bytes:8*1024*1024*1024,
+                temperature_c:None,
+                temperature_provider:None,
+                telemetry_error:None,
+            }
+        }
+
+        let mut store=Store::new();
+        store.gpu_adapters=vec![adapter(0,"A"),adapter(1,"B")];
+        store.gpu_latest=vec![telemetry(0,"A",Some(0.0)),telemetry(1,"B",None)];
+        store.config.gpus.insert("A".into(),gpu_config(0,"Intel(R) Iris(R) Xe Graphics"));
+        store.config.gpus.insert("B".into(),gpu_config(1,"Intel(R) Iris(R) Xe Graphics"));
+        let (top,tray)=surfaces(&store);
+        let top=top.to_string();
+        let tray=tray.to_string();
+        assert!(top.contains("gpu0-utilization"));
+        assert!(!top.contains("gpu1-utilization"));
+        assert!(tray.contains("gpu0-utilization"));
+        assert!(!tray.contains("gpu1-utilization"));
+    }
+
     #[test] fn topbar_series_colors_each_sample_by_its_own_threshold_state(){
         let cfg=metric_config(60.0,90.0);
         let now=now_ms();
