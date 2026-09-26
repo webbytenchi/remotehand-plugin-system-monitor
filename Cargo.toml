@@ -1,11 +1,13 @@
 [package]
 name = "remotehand-system-monitor"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 autobins = false
 
 [dependencies]
 libloading = "0.8"
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sysinfo = "0.37.1"
@@ -16,4 +18,4 @@ path = "src/main.rs"
 
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_System_Performance"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_System_Performance", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

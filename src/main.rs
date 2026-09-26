@@ -1,13 +1,14 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::{self, Read, Write};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use sysinfo::System;
+use sysinfo::{Pid, ProcessesToUpdate, System, Users};
 
 mod gpu_windows;
+mod process_windows;
 use gpu_windows::{GpuAdapterInfo, GpuSampler, GpuTelemetry};
 
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
@@ -393,6 +394,164 @@ struct GpuSnapshot {
     gpus: Vec<GpuTelemetry>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProcessSnapshot {
+    pid: u32,
+    name: String,
+    cpu_percent: f64,
+    memory_bytes: u64,
+    gpu_percent: Option<f64>,
+    user: String,
+    start_time: u64,
+    parent_pid: Option<u32>,
+    path: String,
+    command_line: String,
+    status: String,
+    window_visible: bool,
+}
+
+fn process_snapshot(system: &System, users: &Users, visible: &std::collections::HashSet<u32>) -> Vec<ProcessSnapshot> {
+    let cpu_count = system.cpus().len().max(1) as f64;
+    system.processes().values().map(|p| {
+        let pid = p.pid().as_u32();
+        let user = p.user_id()
+            .and_then(|id| users.get_user_by_id(id))
+            .map(|u| u.name().to_string())
+            .unwrap_or_default();
+        ProcessSnapshot {
+            pid,
+            name: p.name().to_string_lossy().into_owned(),
+            cpu_percent: (p.cpu_usage() as f64 / cpu_count).clamp(0.0, 100.0),
+            memory_bytes: p.memory(),
+            gpu_percent: None,
+            user,
+            start_time: p.start_time(),
+            parent_pid: p.parent().map(|x| x.as_u32()),
+            path: p.exe().map(|x| x.to_string_lossy().into_owned()).unwrap_or_default(),
+            command_line: p.cmd().iter().map(|x| x.to_string_lossy()).collect::<Vec<_>>().join(" "),
+            status: format!("{:?}", p.status()),
+            window_visible: visible.contains(&pid),
+        }
+    }).collect()
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProcessNode {
+    #[serde(flatten)]
+    process: ProcessSnapshot,
+    children: Vec<ProcessNode>,
+    aggregate_cpu_percent: f64,
+    aggregate_memory_bytes: u64,
+}
+
+fn process_matches(p: &ProcessSnapshot, query: &str, filter: &str) -> bool {
+    let query_ok = query.is_empty()
+        || p.name.to_ascii_lowercase().contains(query)
+        || p.path.to_ascii_lowercase().contains(query)
+        || p.command_line.to_ascii_lowercase().contains(query)
+        || p.user.to_ascii_lowercase().contains(query)
+        || p.pid.to_string().contains(query);
+    let filter_ok = match filter {
+        "background" => !p.window_visible,
+        "visible" => p.window_visible,
+        "highCpu" => p.cpu_percent >= 10.0,
+        "highMemory" => p.memory_bytes >= 512 * 1024 * 1024,
+        "gpuActive" => p.gpu_percent.unwrap_or(0.0) > 0.0,
+        _ => true,
+    };
+    query_ok && filter_ok
+}
+
+fn build_process_node(
+    pid: u32,
+    by_pid: &HashMap<u32, ProcessSnapshot>,
+    children_by_parent: &HashMap<u32, Vec<u32>>,
+    included: &HashSet<u32>,
+    sort: &str,
+    direction: &str,
+) -> Option<ProcessNode> {
+    if !included.contains(&pid) { return None; }
+    let process=by_pid.get(&pid)?.clone();
+    let mut children:Vec<ProcessNode>=children_by_parent.get(&pid).into_iter().flatten()
+        .filter_map(|child|build_process_node(*child,by_pid,children_by_parent,included,sort,direction))
+        .collect();
+    sort_process_nodes(&mut children,sort,direction);
+    let aggregate_cpu_percent=process.cpu_percent+children.iter().map(|x|x.aggregate_cpu_percent).sum::<f64>();
+    let aggregate_memory_bytes=process.memory_bytes+children.iter().map(|x|x.aggregate_memory_bytes).sum::<u64>();
+    Some(ProcessNode{process,children,aggregate_cpu_percent,aggregate_memory_bytes})
+}
+
+fn sort_process_nodes(nodes:&mut [ProcessNode], sort:&str, direction:&str){
+    nodes.sort_by(|a,b|{
+        let ord=match sort{
+            "name"=>a.process.name.to_ascii_lowercase().cmp(&b.process.name.to_ascii_lowercase()),
+            "pid"=>a.process.pid.cmp(&b.process.pid),
+            "memory"=>a.aggregate_memory_bytes.cmp(&b.aggregate_memory_bytes),
+            "gpu"=>a.process.gpu_percent.unwrap_or(0.0).total_cmp(&b.process.gpu_percent.unwrap_or(0.0)),
+            "user"=>a.process.user.to_ascii_lowercase().cmp(&b.process.user.to_ascii_lowercase()),
+            "started"=>a.process.start_time.cmp(&b.process.start_time),
+            _=>a.aggregate_cpu_percent.total_cmp(&b.aggregate_cpu_percent),
+        };
+        let ord=if direction=="asc"{ord}else{ord.reverse()};
+        ord.then_with(||a.process.pid.cmp(&b.process.pid))
+    });
+}
+
+fn process_list_value(rows: &[ProcessSnapshot], params: &Value, updated_at: u64) -> Value {
+    let query = params.get("query").and_then(Value::as_str).unwrap_or("").trim().to_ascii_lowercase();
+    let filter = params.get("filter").and_then(Value::as_str).unwrap_or("all");
+    let sort = params.get("sort").and_then(Value::as_str).unwrap_or("cpu");
+    let direction = params.get("direction").and_then(Value::as_str).unwrap_or("desc");
+    let by_pid:HashMap<u32,ProcessSnapshot>=rows.iter().cloned().map(|p|(p.pid,p)).collect();
+    let mut children_by_parent:HashMap<u32,Vec<u32>>=HashMap::new();
+    for p in rows{
+        if let Some(parent)=p.parent_pid{
+            if parent!=p.pid && by_pid.contains_key(&parent){
+                children_by_parent.entry(parent).or_default().push(p.pid);
+            }
+        }
+    }
+
+    let direct:HashSet<u32>=rows.iter().filter(|p|process_matches(p,&query,filter)).map(|p|p.pid).collect();
+    let mut included=direct.clone();
+    for pid in direct{
+        let mut cursor=by_pid.get(&pid).and_then(|p|p.parent_pid);
+        let mut guard=0usize;
+        while let Some(parent)=cursor{
+            if guard>64 || !by_pid.contains_key(&parent){break;}
+            included.insert(parent);
+            cursor=by_pid.get(&parent).and_then(|p|p.parent_pid);
+            guard+=1;
+        }
+    }
+
+    let mut roots:Vec<ProcessNode>=rows.iter()
+        .filter(|p|included.contains(&p.pid))
+        .filter(|p|p.parent_pid.is_none() || !included.contains(&p.parent_pid.unwrap_or_default()))
+        .filter_map(|p|build_process_node(p.pid,&by_pid,&children_by_parent,&included,sort,direction))
+        .collect();
+    sort_process_nodes(&mut roots,sort,direction);
+
+    fn count_nodes(nodes:&[ProcessNode])->usize{nodes.iter().map(|n|1+count_nodes(&n.children)).sum()}
+    let total_processes=count_nodes(&roots);
+    let total_groups=roots.len();
+
+    json!({
+        "rows":roots,
+        "total":total_processes,
+        "totalGroups":total_groups,
+        "page":1,
+        "pageCount":1,
+        "sort":sort,
+        "direction":direction,
+        "updatedAt":updated_at,
+        "searchActive":!query.is_empty() || filter!="all"
+    })
+}
+
+
 struct Store {
     config: Config,
     history: VecDeque<Sample>,
@@ -401,6 +560,9 @@ struct Store {
     gpu_adapters: Vec<GpuAdapterInfo>,
     gpu_discovery_state: String,
     gpu_discovery_error: Option<String>,
+    processes: Vec<ProcessSnapshot>,
+    processes_updated_at: u64,
+    process_icon_cache: BTreeMap<String, Option<String>>,
     cpu_tracker: TransitionTracker,
     temp_tracker: TransitionTracker,
     memory_tracker: TransitionTracker,
@@ -416,6 +578,9 @@ impl Store {
             gpu_adapters: Vec::new(),
             gpu_discovery_state: "pending".into(),
             gpu_discovery_error: None,
+            processes: Vec::new(),
+            processes_updated_at: 0,
+            process_icon_cache: BTreeMap::new(),
             cpu_tracker: Default::default(),
             temp_tracker: Default::default(),
             memory_tracker: Default::default(),
@@ -793,6 +958,35 @@ fn main()->Result<(),String>{
         });
     }
 
+    {
+        let process_store=Arc::clone(&store);
+        let process_output=output_tx.clone();
+        thread::spawn(move||{
+            let mut system=System::new_all();
+            let mut users=Users::new_with_refreshed_list();
+            thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
+            loop{
+                system.refresh_processes(ProcessesToUpdate::All,true);
+                users.refresh();
+                let visible=process_windows::visible_process_ids();
+                let snapshots=process_snapshot(&system,&users,&visible);
+                let count=snapshots.len();
+                let updated_at=now_ms();
+                if let Ok(mut guard)=process_store.lock(){
+                    guard.processes=snapshots;
+                    guard.processes_updated_at=updated_at;
+                }else{return;}
+                let _=send_outbound(&process_output,PluginEvent{
+                    message_type:"plugin.event",
+                    event:"system.processes.updated",
+                    payload:json!({"count":count,"updatedAt":updated_at})
+                });
+                let seconds=match process_store.lock(){Ok(g)=>g.config.sample_seconds,Err(_)=>return};
+                thread::sleep(Duration::from_secs(seconds));
+            }
+        });
+    }
+
     send_outbound(&output_tx,PluginEvent{message_type:"plugin.event",event:"system.ready",payload:json!({"version":env!("CARGO_PKG_VERSION")})})?;
 
     loop{
@@ -802,6 +996,82 @@ fn main()->Result<(),String>{
             "system.status"=>{
                 let guard=store.lock().map_err(|_|"state lock poisoned".to_string())?;
                 PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:status_value(&guard),error:String::new()}
+            }
+            "system.processes.list"=>{
+                let guard=store.lock().map_err(|_|"state lock poisoned".to_string())?;
+                PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:process_list_value(&guard.processes,&request.params,guard.processes_updated_at),error:String::new()}
+            }
+            "system.process.icon"=>{
+                let path=request.params.get("path").and_then(Value::as_str).unwrap_or("").trim().to_string();
+                if path.is_empty(){
+                    PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"dataUrl":null}),error:String::new()}
+                }else{
+                    let cached={store.lock().map_err(|_|"state lock poisoned".to_string())?.process_icon_cache.get(&path).cloned()};
+                    let data_url=match cached{
+                        Some(v)=>v,
+                        None=>{
+                            let v=process_windows::icon_data_url(&path);
+                            if let Ok(mut guard)=store.lock(){guard.process_icon_cache.insert(path.clone(),v.clone());}
+                            v
+                        }
+                    };
+                    PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"dataUrl":data_url}),error:String::new()}
+                }
+            }
+            "system.process.icons"=>{
+                let paths=request.params.get("paths").and_then(Value::as_array).cloned().unwrap_or_default();
+                let mut icons=serde_json::Map::new();
+                for path in paths.into_iter().filter_map(|v|v.as_str().map(str::trim).filter(|s|!s.is_empty()).map(str::to_string)).take(100){
+                    let cached={store.lock().map_err(|_|"state lock poisoned".to_string())?.process_icon_cache.get(&path).cloned()};
+                    let data_url=match cached{
+                        Some(v)=>v,
+                        None=>{
+                            let v=process_windows::icon_data_url(&path);
+                            if let Ok(mut guard)=store.lock(){guard.process_icon_cache.insert(path.clone(),v.clone());}
+                            v
+                        }
+                    };
+                    icons.insert(path,data_url.map(Value::String).unwrap_or(Value::Null));
+                }
+                PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:Value::Object(icons),error:String::new()}
+            }
+            "system.process.open_file_location"=>{
+                let path=request.params.get("path").and_then(Value::as_str).unwrap_or("").trim();
+                match process_windows::open_file_location(path){
+                    Ok(())=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"opened":true}),error:String::new()},
+                    Err(error)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error}
+                }
+            }
+            "system.process.copy"=>{
+                let text=request.params.get("text").and_then(Value::as_str).unwrap_or("");
+                if text.is_empty(){
+                    PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error:"nothing to copy".to_string()}
+                }else{
+                    match host_request(&mut input,&output_tx,&mut host_request_id,"clipboard.write",json!({"text":text})){
+                        Ok(result)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result,error:String::new()},
+                        Err(error)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error}
+                    }
+                }
+            }
+            "system.process.end"=>{
+                let pid=request.params.get("pid").and_then(Value::as_u64).unwrap_or(0) as u32;
+                let expected_name=request.params.get("name").and_then(Value::as_str).unwrap_or("");
+                let outcome=(||{
+                    if pid<=4{return Err("refusing to terminate a critical system process".to_string());}
+                    if pid==std::process::id(){return Err("refusing to terminate System Monitor itself".to_string());}
+                    let mut system=System::new_all();
+                    system.refresh_processes(ProcessesToUpdate::All,true);
+                    let process=system.process(Pid::from_u32(pid)).ok_or_else(||format!("process {pid} is no longer running"))?;
+                    let actual_name=process.name().to_string_lossy();
+                    if !expected_name.is_empty() && !actual_name.eq_ignore_ascii_case(expected_name){
+                        return Err("process changed before it could be ended; refresh and try again".to_string());
+                    }
+                    if process.kill(){Ok(())}else{Err(format!("Windows refused to terminate process {pid}"))}
+                })();
+                match outcome{
+                    Ok(())=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"ended":pid}),error:String::new()},
+                    Err(error)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error}
+                }
             }
             "system.config.set"=>{
                 let parsed:Result<Config,_>=serde_json::from_value(request.params.clone());
@@ -861,6 +1131,37 @@ mod tests{
         let ui=include_str!("../ui/index.html");
         assert!(ui.contains("box.querySelectorAll(\"[data-path][data-alert][data-alert-field]\")"));
         assert!(!ui.contains("if(i.dataset.alert){var alert=target[i.dataset.alert]"));
+    }
+    #[test] fn process_list_defaults_to_cpu_descending(){
+        let rows=vec![
+            ProcessSnapshot{pid:1,name:"low.exe".into(),cpu_percent:2.0,memory_bytes:10,gpu_percent:None,user:"u".into(),start_time:1,parent_pid:None,path:String::new(),command_line:String::new(),status:"Run".into(),window_visible:false},
+            ProcessSnapshot{pid:2,name:"high.exe".into(),cpu_percent:80.0,memory_bytes:20,gpu_percent:None,user:"u".into(),start_time:2,parent_pid:None,path:String::new(),command_line:String::new(),status:"Run".into(),window_visible:true},
+        ];
+        let value=process_list_value(&rows,&json!({"page":1,"pageSize":25}),123);
+        assert_eq!(value["rows"][0]["pid"],2);
+        assert_eq!(value["total"],2);
+        assert_eq!(value["page"],1);
+        assert_eq!(value["direction"],"desc");
+    }
+    #[test] fn process_list_keeps_parent_context_for_matching_child(){
+        let rows=vec![
+            ProcessSnapshot{pid:100,name:"parent.exe".into(),cpu_percent:1.0,memory_bytes:10,gpu_percent:None,user:"u".into(),start_time:1,parent_pid:None,path:String::new(),command_line:String::new(),status:"Run".into(),window_visible:true},
+            ProcessSnapshot{pid:101,name:"remote-child.exe".into(),cpu_percent:2.0,memory_bytes:20,gpu_percent:None,user:"u".into(),start_time:2,parent_pid:Some(100),path:String::new(),command_line:String::new(),status:"Run".into(),window_visible:false},
+        ];
+        let value=process_list_value(&rows,&json!({"query":"remote"}),123);
+        assert_eq!(value["total"],2);
+        assert_eq!(value["totalGroups"],1);
+        assert_eq!(value["rows"][0]["pid"],100);
+        assert_eq!(value["rows"][0]["children"][0]["pid"],101);
+    }
+    #[test] fn process_list_searches_background_processes(){
+        let rows=vec![
+            ProcessSnapshot{pid:11,name:"visible.exe".into(),cpu_percent:1.0,memory_bytes:1,gpu_percent:None,user:"Papa".into(),start_time:1,parent_pid:None,path:"C:\\Visible.exe".into(),command_line:String::new(),status:"Run".into(),window_visible:true},
+            ProcessSnapshot{pid:12,name:"worker.exe".into(),cpu_percent:1.0,memory_bytes:1,gpu_percent:None,user:"Papa".into(),start_time:1,parent_pid:None,path:"C:\\Tools\\worker.exe".into(),command_line:"worker.exe --quiet".into(),status:"Run".into(),window_visible:false},
+        ];
+        let value=process_list_value(&rows,&json!({"filter":"background","query":"worker"}),123);
+        assert_eq!(value["total"],1);
+        assert_eq!(value["rows"][0]["pid"],12);
     }
     #[test] fn visualization_defaults_match_metric_behavior(){let c=Config::default();assert_eq!(c.cpu.overview_visualization.as_deref(),Some("graph"));assert_eq!(c.cpu.topbar_visualization.as_deref(),Some("graph"));assert_eq!(c.memory.overview_visualization.as_deref(),Some("bar"));assert_eq!(c.memory.topbar_visualization.as_deref(),Some("bar"));}
     #[test] fn gpu_defaults_are_per_adapter_and_optional_temperature(){

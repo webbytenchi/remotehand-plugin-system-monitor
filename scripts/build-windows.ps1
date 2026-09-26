@@ -7,6 +7,7 @@ $stageExe = Join-Path $stageDir "remotehand-system-monitor.exe"
 $packageDir = Join-Path $repo "dist\remotehand-system-monitor-windows-x86_64"
 $packageBinDir = Join-Path $packageDir "bin\windows-x86_64"
 $packageUiDir = Join-Path $packageDir "ui"
+$packageAssetsDir = Join-Path $packageDir "assets"
 $pluginVersion = (Get-Content (Join-Path $repo "plugin.json") -Raw | ConvertFrom-Json).version
 
 Write-Host "Building RemoteHand System Monitor (release)..."
@@ -29,9 +30,11 @@ if (Test-Path $packageDir) {
 }
 New-Item -ItemType Directory -Force -Path $packageBinDir | Out-Null
 New-Item -ItemType Directory -Force -Path $packageUiDir | Out-Null
+New-Item -ItemType Directory -Force -Path $packageAssetsDir | Out-Null
 
 Copy-Item -Force (Join-Path $repo "plugin.json") (Join-Path $packageDir "plugin.json")
 Copy-Item -Force (Join-Path $repo "ui\index.html") (Join-Path $packageUiDir "index.html")
+Copy-Item -Force (Join-Path $repo "assets\*") $packageAssetsDir
 Copy-Item -Force $sourceExe (Join-Path $packageBinDir "remotehand-system-monitor.exe")
 
 $packageBytes = (Get-ChildItem -File -Recurse $packageDir | Measure-Object -Property Length -Sum).Sum

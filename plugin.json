@@ -1,10 +1,10 @@
 {
   "id": "remotehand.system-monitor",
   "name": "RemoteHand System Monitor",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "apiVersion": 1,
   "author": "RemoteHand",
-  "description": "Local CPU, memory, and GPU monitoring for RemoteHand.",
+  "description": "Local CPU, memory, GPU, and process monitoring for RemoteHand.",
   "runtime": {
     "kind": "executable",
     "entrypoints": {
@@ -13,6 +13,7 @@
   },
   "permissions": [
     "files.save",
+    "clipboard.write",
     "storage.plugin",
     "tray.contribute",
     "notifications.show"
@@ -22,7 +23,7 @@
       {
         "id": "system-monitor",
         "title": "System Monitor",
-        "icon": "monitor-pulse",
+        "icon": "assets/sidebar.svg",
         "panel": "system-monitor"
       }
     ],
