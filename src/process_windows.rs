@@ -16,9 +16,11 @@ mod imp {
         BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HGDIOBJ,
     };
     use windows::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_SMALLICON};
+    use windows::Win32::System::Threading::GetCurrentThreadId;
     use windows::Win32::UI::WindowsAndMessaging::{
-        BringWindowToTop, DestroyIcon, DrawIconEx, EnumWindows, GetWindowThreadProcessId,
-        IsIconic, IsWindowVisible, SetForegroundWindow, ShowWindow, DI_NORMAL, SW_RESTORE,
+        AttachThreadInput, BringWindowToTop, DestroyIcon, DrawIconEx, EnumWindows,
+        GetForegroundWindow, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
+        SetForegroundWindow, ShowWindow, DI_NORMAL, SW_RESTORE,
     };
 
     unsafe extern "system" fn enum_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
@@ -115,9 +117,26 @@ mod imp {
             if IsIconic(hwnd).as_bool() {
                 let _ = ShowWindow(hwnd, SW_RESTORE);
             }
+            let foreground = GetForegroundWindow();
+            let current_thread = GetCurrentThreadId();
+            let target_thread = GetWindowThreadProcessId(hwnd, None);
+            let foreground_thread = if foreground.0.is_null() { 0 } else { GetWindowThreadProcessId(foreground, None) };
+            if foreground_thread != 0 && foreground_thread != current_thread {
+                let _ = AttachThreadInput(current_thread, foreground_thread, true);
+            }
+            if target_thread != 0 && target_thread != current_thread {
+                let _ = AttachThreadInput(current_thread, target_thread, true);
+            }
             let _ = BringWindowToTop(hwnd);
-            if !SetForegroundWindow(hwnd).as_bool() {
-                return Err("Windows did not allow the process window to take focus".to_string());
+            let focused = SetForegroundWindow(hwnd).as_bool();
+            if target_thread != 0 && target_thread != current_thread {
+                let _ = AttachThreadInput(current_thread, target_thread, false);
+            }
+            if foreground_thread != 0 && foreground_thread != current_thread {
+                let _ = AttachThreadInput(current_thread, foreground_thread, false);
+            }
+            if !focused {
+                return Err("Windows kept the current foreground window; the target was restored but could not take keyboard focus".to_string());
             }
         }
         Ok(())
