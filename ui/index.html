@@ -25,7 +25,7 @@
 <div class="process-toolbar">
 <input id="processSearch" class="process-search" type="search" placeholder="Search name, PID, path, command line, or user">
 <select id="processFilter" aria-label="Process filter"><option value="all">All processes</option><option value="background">Background only</option><option value="visible">Visible window</option><option value="gpuActive">GPU active</option></select>
-<select id="processPageSize" aria-label="Rows per page"><option value="25">25 rows</option><option value="50" selected>50 rows</option><option value="100">100 rows</option></select>
+<select id="processPageSize" aria-label="Groups per page"><option value="5">5 groups</option><option value="10" selected>10 groups</option><option value="25">25 groups</option></select>
 <label class="check process-compact-control"><input id="processCompactTree" type="checkbox" checked> Compact tree <span id="processCompactStatus" class="process-compact-status"></span></label>
 <button id="processRefresh" type="button">Refresh</button>
 </div>
@@ -71,7 +71,7 @@
 <div id="notice" class="notice" hidden><span id="noticeText" class="notice-text"></span><button id="noticeClose" class="notice-close" type="button" aria-label="Dismiss message">×</button></div>
 <script>
 (function(){"use strict";
-var bridge=window.remotehand,state={config:null,latest:null,history:[],gpu:{state:"pending",adapters:[],latest:[],history:[]}},minutes=15,chain=Promise.resolve(),settingsTab="general",settingsDraft=null,PROCESS_COLUMN_KEY="remotehand.system-monitor.process-columns.v1",PROCESS_COMPACT_KEY="remotehand.system-monitor.process-compact-tree.v1",processMenuTarget=null,processState={query:"",filter:"all",sort:"cpu",direction:"desc",page:1,pageSize:50,total:0,totalGroups:0,pageCount:1,rows:[],updatedAt:0,searchActive:false,compactTree:true,expanded:{},icons:{},columnWidths:{name:360,pid:90,cpu:90,memory:120,gpu:90,user:150,started:190}},processSearchTimer=null;
+var bridge=window.remotehand,state={config:null,latest:null,history:[],gpu:{state:"pending",adapters:[],latest:[],history:[]}},minutes=15,chain=Promise.resolve(),settingsTab="general",settingsDraft=null,PROCESS_COLUMN_KEY="remotehand.system-monitor.process-columns.v1",PROCESS_COMPACT_KEY="remotehand.system-monitor.process-compact-tree.v1",processMenuTarget=null,processState={query:"",filter:"all",sort:"cpu",direction:"desc",page:1,pageSize:10,total:0,totalGroups:0,pageCount:1,rows:[],updatedAt:0,searchActive:false,compactTree:true,expanded:{},icons:{},columnWidths:{name:360,pid:90,cpu:90,memory:120,gpu:90,user:150,started:190}},processSearchTimer=null;
 function el(id){return document.getElementById(id)}function request(method,params){params=params||{};if(!bridge||!bridge.request)return Promise.reject(new Error("plugin bridge unavailable"));var run=function(){return bridge.request(method,params)};var p=chain.then(run,run);chain=p.catch(function(){});return p}
 function fmt(v,u){return v!==null&&v!==undefined&&v!==""&&Number.isFinite(Number(v))?Math.round(Number(v))+u:"—"}function bytes(v){if(v==null)return"—";var n=Number(v),u=["B","KB","MB","GB","TB"],i=0;while(n>=1024&&i<u.length-1){n/=1024;i++}return n.toFixed(i>=3?1:0)+" "+u[i]}
 function toast(t,type){var n=el("notice");el("noticeText").textContent=t;n.className="notice "+(type||"");n.hidden=false;clearTimeout(n.t);n.t=setTimeout(function(){n.hidden=true},3000)}el("noticeClose").onclick=function(){el("notice").hidden=true}
@@ -250,19 +250,20 @@ td(String(p.pid));td(cpu.toFixed(1));td(bytes(mem));td(p.gpuPercent==null?"—":
 }
 function renderProcesses(){
 var body=el("processRows");if(!body)return;body.innerHTML="";
-var visible=flattenVisibleProcessRows(processState.rows||[],0,[]);
-processState.pageCount=Math.max(1,Math.ceil(visible.length/processState.pageSize));
+var roots=processState.rows||[];
+processState.pageCount=Math.max(1,Math.ceil(roots.length/processState.pageSize));
 processState.page=Math.min(Math.max(1,processState.page),processState.pageCount);
-var start=(processState.page-1)*processState.pageSize,end=Math.min(visible.length,start+processState.pageSize);
-visible.slice(start,end).forEach(function(item){renderProcessNode(body,item.node,item.depth)});
-el("processSummary").textContent=processState.total+" process"+(processState.total===1?"":"es")+" · "+visible.length+" visible row"+(visible.length===1?"":"s")+" · "+processState.totalGroups+" group"+(processState.totalGroups===1?"":"s");
+var start=(processState.page-1)*processState.pageSize,end=Math.min(roots.length,start+processState.pageSize);
+roots.slice(start,end).forEach(function(p){renderProcessNode(body,p,0)});
+var visible=flattenVisibleProcessRows(roots.slice(start,end),0,[]);
+el("processSummary").textContent=processState.total+" process"+(processState.total===1?"":"es")+" · "+processState.totalGroups+" group"+(processState.totalGroups===1?"":"s");
 var hiddenLaunchers=processState.compactTree?processCompactHiddenCount(processState.rows):0;
 el("processCompactStatus").textContent=processState.compactTree?"("+hiddenLaunchers+" launcher"+(hiddenLaunchers===1?"":"s")+" hidden)":"";
 el("processPage").textContent="Page "+processState.page+" of "+processState.pageCount;el("processPrev").disabled=processState.page<=1;el("processNext").disabled=processState.page>=processState.pageCount;
 el("processUpdated").textContent=processState.updatedAt?"Updated "+new Date(processState.updatedAt).toLocaleTimeString():"";
 document.querySelectorAll("[data-process-sort]").forEach(function(th){var key=th.dataset.processSort,labels={name:"Process",pid:"PID",cpu:"CPU %",memory:"Memory",gpu:"GPU %",user:"User",started:"Started"},handle=th.querySelector(".process-col-resizer");th.childNodes[0].nodeValue=processSortLabel(key,labels[key]);if(handle&&!th.contains(handle))th.appendChild(handle)});
 applyProcessColumnWidths();
-var paths={};visible.slice(start,end).forEach(function(item){if(item.node.path)paths[item.node.path]=true});var missing=Object.keys(paths).filter(function(p){return !(p in processState.icons)});if(missing.length){request("system.process.icons",{paths:missing.slice(0,100)}).then(function(map){Object.keys(map||{}).forEach(function(path){processState.icons[path]=map[path]||null});renderProcesses()}).catch(function(){})}
+var paths={};visible.forEach(function(item){if(item.node.path)paths[item.node.path]=true});var missing=Object.keys(paths).filter(function(p){return !(p in processState.icons)});if(missing.length){request("system.process.icons",{paths:missing.slice(0,100)}).then(function(map){Object.keys(map||{}).forEach(function(path){processState.icons[path]=map[path]||null});renderProcesses()}).catch(function(){})}
 }
 function seedSearchExpansion(nodes){
 (nodes||[]).forEach(function(node){
@@ -297,7 +298,7 @@ function setupProcesses(){
 setupProcessContextMenu();loadProcessColumnWidths();try{var savedCompact=localStorage.getItem(PROCESS_COMPACT_KEY);if(savedCompact!==null)processState.compactTree=savedCompact!=="false"}catch(e){};el("processCompactTree").checked=processState.compactTree;applyProcessColumnWidths();setupProcessColumnResize();
 el("processSearch").oninput=function(){processState.query=this.value;clearTimeout(processSearchTimer);processSearchTimer=setTimeout(function(){loadProcesses(true)},250)};
 el("processFilter").onchange=function(){processState.filter=this.value;loadProcesses(true)};
-el("processPageSize").onchange=function(){processState.pageSize=Number(this.value)||50;processState.page=1;renderProcesses()};
+el("processPageSize").onchange=function(){processState.pageSize=Number(this.value)||10;processState.page=1;renderProcesses()};
 el("processCompactTree").onchange=function(){processState.compactTree=this.checked;try{localStorage.setItem(PROCESS_COMPACT_KEY,String(processState.compactTree))}catch(e){};renderProcesses()};
 el("processRefresh").onclick=function(){loadProcesses(false)};
 el("processPrev").onclick=function(){if(processState.page>1){processState.page--;renderProcesses()}};
