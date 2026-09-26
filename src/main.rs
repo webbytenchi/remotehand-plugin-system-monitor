@@ -5,7 +5,7 @@ use std::io::{self, Read, Write};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use sysinfo::{ProcessesToUpdate, System, Users};
+use sysinfo::{Pid, ProcessesToUpdate, System, Users};
 
 mod gpu_windows;
 mod process_windows;
@@ -1047,6 +1047,40 @@ fn main()->Result<(),String>{
                     icons.insert(path,data_url.map(Value::String).unwrap_or(Value::Null));
                 }
                 PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:Value::Object(icons),error:String::new()}
+            }
+            "system.process.focus"=>{
+                let pid=request.params.get("pid").and_then(Value::as_u64).unwrap_or(0) as u32;
+                match process_windows::focus_process_window(pid){
+                    Ok(())=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"focused":pid}),error:String::new()},
+                    Err(error)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error}
+                }
+            }
+            "system.process.open_file_location"=>{
+                let path=request.params.get("path").and_then(Value::as_str).unwrap_or("").trim();
+                match process_windows::open_file_location(path){
+                    Ok(())=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"opened":true}),error:String::new()},
+                    Err(error)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error}
+                }
+            }
+            "system.process.end"=>{
+                let pid=request.params.get("pid").and_then(Value::as_u64).unwrap_or(0) as u32;
+                let expected_name=request.params.get("name").and_then(Value::as_str).unwrap_or("");
+                let outcome=(||{
+                    if pid<=4{return Err("refusing to terminate a critical system process".to_string());}
+                    if pid==std::process::id(){return Err("refusing to terminate System Monitor itself".to_string());}
+                    let mut system=System::new_all();
+                    system.refresh_processes(ProcessesToUpdate::All,true);
+                    let process=system.process(Pid::from_u32(pid)).ok_or_else(||format!("process {pid} is no longer running"))?;
+                    let actual_name=process.name().to_string_lossy();
+                    if !expected_name.is_empty() && !actual_name.eq_ignore_ascii_case(expected_name){
+                        return Err("process changed before it could be ended; refresh and try again".to_string());
+                    }
+                    if process.kill(){Ok(())}else{Err(format!("Windows refused to terminate process {pid}"))}
+                })();
+                match outcome{
+                    Ok(())=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"ended":pid}),error:String::new()},
+                    Err(error)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error}
+                }
             }
             "system.config.set"=>{
                 let parsed:Result<Config,_>=serde_json::from_value(request.params.clone());
