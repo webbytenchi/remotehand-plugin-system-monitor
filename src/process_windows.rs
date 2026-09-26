@@ -60,9 +60,9 @@ mod imp {
                 ..Default::default()
             };
             let mut bits:*mut c_void=std::ptr::null_mut();
-            let bitmap=CreateDIBSection(dc,&bmi,DIB_RGB_COLORS,&mut bits,None,0).ok()?;
+            let bitmap=CreateDIBSection(Some(dc),&bmi,DIB_RGB_COLORS,&mut bits,None,0).ok()?;
             let old=SelectObject(dc,HGDIOBJ(bitmap.0));
-            let drawn=DrawIconEx(dc,0,0,hicon,32,32,0,None,DI_NORMAL).as_bool();
+            let drawn=DrawIconEx(dc,0,0,hicon,32,32,0,None,DI_NORMAL).is_ok();
             let mut rgba=vec![0u8;32*32*4];
             if drawn && !bits.is_null(){
                 let bgra=std::slice::from_raw_parts(bits as *const u8,rgba.len());
@@ -94,7 +94,7 @@ mod imp {
 }
 
 #[cfg(windows)]
-pub use imp::visible_process_ids;
+pub use imp::{icon_data_url, visible_process_ids};
 
 #[cfg(not(windows))]
 pub fn visible_process_ids() -> HashSet<u32> {
