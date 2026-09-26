@@ -711,6 +711,56 @@ fn recent_gpu_series(history:&VecDeque<GpuSnapshot>,luid:&str,kind:&str,seconds:
         Some(json!({"value":v,"tone":health_name(h),"color":health_color(h,cfg)}))
     }).collect()
 }
+fn gpu_telemetry_present(gpu:&GpuTelemetry)->bool{
+    gpu.utilization_percent.is_some()
+        || gpu.dedicated_used_bytes.is_some()
+        || gpu.shared_used_bytes.is_some()
+        || gpu.temperature_c.is_some()
+        || !gpu.engines.is_empty()
+}
+
+fn gpu_identity(adapter:&GpuAdapterInfo)->String{
+    format!(
+        "{}|{}|{}|{}|{}|{}|{}|{}",
+        adapter.name.to_ascii_lowercase(),
+        adapter.vendor_id,
+        adapter.device_id,
+        adapter.subsystem_id,
+        adapter.revision,
+        adapter.dedicated_video_memory_bytes,
+        adapter.dedicated_system_memory_bytes,
+        adapter.shared_system_memory_bytes,
+    )
+}
+
+fn visible_gpu_luids(adapters:&[GpuAdapterInfo],latest:&[GpuTelemetry])->HashSet<String>{
+    let mut groups:BTreeMap<String,Vec<&GpuAdapterInfo>>=BTreeMap::new();
+    for adapter in adapters{
+        groups.entry(gpu_identity(adapter)).or_default().push(adapter);
+    }
+
+    let mut visible=HashSet::new();
+    for group in groups.values(){
+        if group.len()==1{
+            visible.insert(group[0].luid.clone());
+            continue;
+        }
+
+        let active:Vec<&GpuAdapterInfo>=group.iter().copied().filter(|adapter|{
+            latest.iter().find(|gpu|gpu.luid==adapter.luid).is_some_and(gpu_telemetry_present)
+        }).collect();
+
+        if active.len()==1{
+            visible.insert(active[0].luid.clone());
+        }else{
+            for adapter in group{
+                visible.insert(adapter.luid.clone());
+            }
+        }
+    }
+    visible
+}
+
 fn metric_topbar(id:&str,default_title:&str,value:Option<f64>,unit:&str,progress_percent:Option<f64>,series:Vec<Value>,h:Health,cfg:&MetricConfig,default_visualization:&str)->Value{
     let shown=value.map(|v|format!("{:.0}{unit}",v)).unwrap_or_else(||"—".into());
     let title=cfg.topbar_title.as_deref().filter(|v|!v.trim().is_empty()).unwrap_or(default_title);
@@ -754,7 +804,9 @@ fn surfaces(store:&Store)->(Value,Value){
     if store.config.cpu.show_topbar{top.push(metric_topbar("cpu","CPU",cpu_value,"%",cpu_value,recent_series(&store.history,|s|Some(s.cpu_percent),60,&store.config.cpu),cpu_h,&store.config.cpu,"graph"));}
     if store.config.memory.show_topbar{top.push(metric_topbar("memory","Memory",mem_value,"%",mem_value,recent_series(&store.history,|s|Some(s.memory_percent),60,&store.config.memory),mem_h,&store.config.memory,"bar"));}
 
+    let visible_gpu_luids=visible_gpu_luids(&store.gpu_adapters,&store.gpu_latest);
     for gpu in &store.gpu_latest {
+        if !visible_gpu_luids.contains(&gpu.luid){continue;}
         let Some(cfg)=store.config.gpus.get(&gpu.luid) else {continue};
         let mut metrics=vec![
             ("utilization","%",gpu.utilization_percent,&cfg.utilization,"graph"),
@@ -1180,6 +1232,66 @@ mod tests{
         assert_eq!(percent(Some(4),0),None);
         assert_eq!(percent(None,8),None);
     }
+    #[test] fn duplicate_gpu_identity_hides_only_the_single_telemetry_empty_luid(){
+        fn adapter(index:u32,luid:&str)->GpuAdapterInfo{
+            GpuAdapterInfo{
+                index,
+                name:"Intel(R) Iris(R) Xe Graphics".into(),
+                luid:luid.into(),
+                vendor_id:0x8086,
+                device_id:0x1234,
+                subsystem_id:0x5678,
+                revision:1,
+                dedicated_video_memory_bytes:0,
+                dedicated_system_memory_bytes:0,
+                shared_system_memory_bytes:8*1024*1024*1024,
+                software:false,
+            }
+        }
+        fn telemetry(index:u32,luid:&str,util:Option<f64>)->GpuTelemetry{
+            GpuTelemetry{
+                index,
+                name:"Intel(R) Iris(R) Xe Graphics".into(),
+                luid:luid.into(),
+                utilization_percent:util,
+                engines:vec![],
+                dedicated_used_bytes:None,
+                dedicated_total_bytes:0,
+                shared_used_bytes:None,
+                shared_total_bytes:8*1024*1024*1024,
+                temperature_c:None,
+                temperature_provider:None,
+                telemetry_error:None,
+            }
+        }
+
+        let adapters=vec![adapter(0,"A"),adapter(1,"B")];
+        let latest=vec![telemetry(0,"A",Some(0.0)),telemetry(1,"B",None)];
+        let visible=visible_gpu_luids(&adapters,&latest);
+        assert!(visible.contains("A"));
+        assert!(!visible.contains("B"));
+    }
+
+    #[test] fn duplicate_gpu_identity_keeps_both_when_visibility_is_ambiguous(){
+        let mk_adapter=|index,luid:&str|GpuAdapterInfo{
+            index,
+            name:"Example GPU".into(),
+            luid:luid.into(),
+            vendor_id:1,
+            device_id:2,
+            subsystem_id:3,
+            revision:4,
+            dedicated_video_memory_bytes:5,
+            dedicated_system_memory_bytes:6,
+            shared_system_memory_bytes:7,
+            software:false,
+        };
+        let adapters=vec![mk_adapter(0,"A"),mk_adapter(1,"B")];
+        let visible=visible_gpu_luids(&adapters,&[]);
+        assert!(visible.contains("A"));
+        assert!(visible.contains("B"));
+    }
+
     #[test] fn topbar_series_colors_each_sample_by_its_own_threshold_state(){
         let cfg=metric_config(60.0,90.0);
         let now=now_ms();
