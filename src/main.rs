@@ -504,13 +504,6 @@ fn process_list_value(rows: &[ProcessSnapshot], params: &Value, updated_at: u64)
     let filter = params.get("filter").and_then(Value::as_str).unwrap_or("all");
     let sort = params.get("sort").and_then(Value::as_str).unwrap_or("cpu");
     let direction = params.get("direction").and_then(Value::as_str).unwrap_or("desc");
-    let page_size = match params.get("pageSize").and_then(Value::as_u64).unwrap_or(50) {
-        25 => 25usize,
-        100 => 100usize,
-        _ => 50usize,
-    };
-    let mut page = params.get("page").and_then(Value::as_u64).unwrap_or(1).max(1) as usize;
-
     let by_pid:HashMap<u32,ProcessSnapshot>=rows.iter().cloned().map(|p|(p.pid,p)).collect();
     let mut children_by_parent:HashMap<u32,Vec<u32>>=HashMap::new();
     for p in rows{
@@ -544,19 +537,13 @@ fn process_list_value(rows: &[ProcessSnapshot], params: &Value, updated_at: u64)
     fn count_nodes(nodes:&[ProcessNode])->usize{nodes.iter().map(|n|1+count_nodes(&n.children)).sum()}
     let total_processes=count_nodes(&roots);
     let total_groups=roots.len();
-    let page_count=((total_groups+page_size-1)/page_size).max(1);
-    page=page.min(page_count);
-    let start=(page-1)*page_size;
-    let end=(start+page_size).min(total_groups);
-    let page_rows=if start<total_groups{roots[start..end].to_vec()}else{Vec::new()};
 
     json!({
-        "rows":page_rows,
+        "rows":roots,
         "total":total_processes,
         "totalGroups":total_groups,
-        "page":page,
-        "pageSize":page_size,
-        "pageCount":page_count,
+        "page":1,
+        "pageCount":1,
         "sort":sort,
         "direction":direction,
         "updatedAt":updated_at,
@@ -1152,7 +1139,7 @@ mod tests{
         assert!(ui.contains("box.querySelectorAll(\"[data-path][data-alert][data-alert-field]\")"));
         assert!(!ui.contains("if(i.dataset.alert){var alert=target[i.dataset.alert]"));
     }
-    #[test] fn process_list_defaults_to_cpu_descending_and_paginates(){
+    #[test] fn process_list_defaults_to_cpu_descending(){
         let rows=vec![
             ProcessSnapshot{pid:1,name:"low.exe".into(),cpu_percent:2.0,memory_bytes:10,gpu_percent:None,user:"u".into(),start_time:1,parent_pid:None,path:String::new(),command_line:String::new(),status:"Run".into(),window_visible:false},
             ProcessSnapshot{pid:2,name:"high.exe".into(),cpu_percent:80.0,memory_bytes:20,gpu_percent:None,user:"u".into(),start_time:2,parent_pid:None,path:String::new(),command_line:String::new(),status:"Run".into(),window_visible:true},
