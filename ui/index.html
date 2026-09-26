@@ -21,7 +21,7 @@
 <div class="card">
 <div class="process-toolbar">
 <input id="processSearch" class="process-search" type="search" placeholder="Search name, PID, path, command line, or user">
-<select id="processFilter" aria-label="Process filter"><option value="all">All processes</option><option value="background">Background only</option><option value="visible">Visible window</option><option value="highCpu">CPU ≥ 10%</option><option value="highMemory">Memory ≥ 512 MB</option><option value="gpuActive">GPU active</option></select>
+<select id="processFilter" aria-label="Process filter"><option value="all">All processes</option><option value="background">Background only</option><option value="visible">Visible window</option><option value="gpuActive">GPU active</option></select>
 <select id="processPageSize" aria-label="Rows per page"><option value="25">25 rows</option><option value="50" selected>50 rows</option><option value="100">100 rows</option></select>
 <label class="check process-compact-control"><input id="processCompactTree" type="checkbox" checked> Compact tree <span id="processCompactStatus" class="process-compact-status"></span></label>
 <button id="processRefresh" type="button">Refresh</button>
@@ -100,7 +100,7 @@ handle.onpointerup=function(up){try{handle.releasePointerCapture(up.pointerId)}c
 };th.appendChild(handle)
 })
 }
-function collectVisibleProcessPaths(nodes,out){(nodes||[]).forEach(function(n){if(n.path)out[n.path]=true;if((processState.expanded[n.pid]||processState.searchActive)&&n.children&&n.children.length)collectVisibleProcessPaths(n.children,out)})}
+function collectVisibleProcessPaths(nodes,out){(nodes||[]).forEach(function(n){if(n.path)out[n.path]=true;if(processState.expanded[n.pid]&&n.children&&n.children.length)collectVisibleProcessPaths(n.children,out)})}
 function hydrateProcessIcons(){
 var paths={};collectVisibleProcessPaths(processState.rows,paths);var missing=Object.keys(paths).filter(function(p){return !(p in processState.icons)});if(!missing.length)return;
 request("system.process.icons",{paths:missing.slice(0,100)}).then(function(map){Object.keys(map||{}).forEach(function(path){processState.icons[path]=map[path]||null});renderProcesses()}).catch(function(){})
@@ -132,7 +132,7 @@ if(compact.node&&compact.node.children)total+=processCompactHiddenCount(compact.
 return total
 }
 function renderProcessNode(body,p,depth){
-var hasChildren=!!(p.children&&p.children.length),expanded=!!processState.expanded[p.pid]||processState.searchActive,tr=document.createElement("tr");
+var hasChildren=!!(p.children&&p.children.length),expanded=!!processState.expanded[p.pid],tr=document.createElement("tr");
 function td(text,title){var x=document.createElement("td");x.textContent=text;if(title)x.title=title;tr.appendChild(x);return x}
 var nameTd=document.createElement("td"),wrap=document.createElement("div");wrap.className="process-name";
 var indent=document.createElement("span");indent.className="process-indent";indent.style.width=(depth*18)+"px";wrap.appendChild(indent);
@@ -154,10 +154,20 @@ el("processUpdated").textContent=processState.updatedAt?"Updated "+new Date(proc
 document.querySelectorAll("[data-process-sort]").forEach(function(th){var key=th.dataset.processSort,labels={name:"Process",pid:"PID",cpu:"CPU %",memory:"Memory",gpu:"GPU %",user:"User",started:"Started"},handle=th.querySelector(".process-col-resizer");th.childNodes[0].nodeValue=processSortLabel(key,labels[key]);if(handle&&!th.contains(handle))th.appendChild(handle)});
 applyProcessColumnWidths();hydrateProcessIcons()
 }
+function seedSearchExpansion(nodes){
+(nodes||[]).forEach(function(node){
+if(node.children&&node.children.length){
+processState.expanded[node.pid]=true;
+seedSearchExpansion(node.children)
+}
+})
+}
 function loadProcesses(resetPage){
 if(resetPage)processState.page=1;
 return request("system.processes.list",{query:processState.query,filter:processState.filter,sort:processState.sort,direction:processState.direction,page:processState.page,pageSize:processState.pageSize}).then(function(v){
-processState.rows=v.rows||[];processState.total=Number(v.total)||0;processState.totalGroups=Number(v.totalGroups)||0;processState.page=Number(v.page)||1;processState.pageCount=Number(v.pageCount)||1;processState.updatedAt=Number(v.updatedAt)||0;processState.searchActive=!!v.searchActive;renderProcesses()
+processState.rows=v.rows||[];processState.total=Number(v.total)||0;processState.totalGroups=Number(v.totalGroups)||0;processState.page=Number(v.page)||1;processState.pageCount=Number(v.pageCount)||1;processState.updatedAt=Number(v.updatedAt)||0;processState.searchActive=!!v.searchActive;
+if(processState.searchActive&&resetPage){processState.expanded={};seedSearchExpansion(processState.rows)}
+renderProcesses()
 }).catch(function(e){toast(String(e),"error")})
 }
 function setupProcesses(){
