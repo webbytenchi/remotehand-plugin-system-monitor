@@ -1,8 +1,20 @@
 # RemoteHand System Monitor
 
-Status: **v0.3.0**
+Status: **v0.3.1**
 
 RemoteHand System Monitor is a Windows-first plugin for local CPU, memory, and GPU monitoring. It keeps hardware-monitoring semantics inside the plugin while RemoteHand core provides only generic plugin infrastructure.
+
+## v0.3.1 scope
+
+v0.3.1 is a focused GPU-surface consistency bugfix release.
+
+- applies the existing duplicate/inactive GPU-adapter visibility rule to top-bar and system-tray contributions
+- keeps Overview, Settings, top-bar, and tray GPU visibility aligned
+- preserves legitimate idle GPUs at 0% utilization
+- suppresses only the duplicate logical adapter when an otherwise identical adapter is the sole instance with meaningful telemetry
+- adds regression coverage for duplicate-LUID filtering and emitted top-bar/tray surfaces
+
+This fixes the case where a silent duplicate Intel GPU LUID could be hidden correctly in Overview and Settings but still remain visible in the RemoteHand top bar without a corresponding Settings control.
 
 ## v0.3.0 scope
 
