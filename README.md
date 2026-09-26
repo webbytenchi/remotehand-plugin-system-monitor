@@ -1,8 +1,30 @@
 # RemoteHand System Monitor
 
-Status: **v0.2.0**
+Status: **v0.3.0**
 
 RemoteHand System Monitor is a Windows-first plugin for local CPU, memory, and GPU monitoring. It keeps hardware-monitoring semantics inside the plugin while RemoteHand core provides only generic plugin infrastructure.
+
+## v0.3.0 scope
+
+v0.3.0 adds a Windows-first Processes view while keeping process-monitoring semantics inside the plugin.
+
+- full Windows process enumeration, including background/headless processes
+- searchable process tree with parent/child context preserved
+- collapsible hierarchy with compact launcher-chain folding
+- process executable icons with lazy/cached loading
+- sortable columns for Process, PID, CPU, Memory, GPU, User, and Started
+- resizable process columns with persisted widths
+- All / Background / Visible / GPU-active filters
+- top-level process-group pagination with selectable group counts
+- process Details dialog
+- Open file location
+- Copy process name, PID, executable path, or command line
+- guarded End task action with confirmation and PID/name reuse protection
+- plugin-owned themed sidebar icon through RemoteHand's generic sidebar asset support
+
+Per-process GPU attribution is not yet implemented, so the Processes GPU column remains unavailable until a suitable Windows provider is added. Publisher/signature metadata is also deferred.
+
+The attempted Open / Focus window action was intentionally removed from v0.3.0 after Windows foreground-window behavior proved unreliable across process/window hosting models.
 
 ## v0.2.0 scope
 
@@ -74,15 +96,14 @@ Do not add CPU-, GPU-, sensor-, vendor-, or hardware-specific logic to RemoteHan
 
 ## Current non-goals
 
-Not in v0.2.0:
+Not in v0.3.0:
 
 - CPU temperature
 - Linux implementation
 - fan control
 - voltage, tuning, or overclocking
-- process management
 - benchmarking or stress testing
 - persistent telemetry database
 - motherboard-wide sensor-suite replacement
 
-See `V0.1.0-DESIGN.md` for the original baseline design. v0.2.0 extends that baseline with native Windows GPU monitoring.
+See `V0.1.0-DESIGN.md` for the original baseline design. v0.2.0 extended that baseline with native Windows GPU monitoring, and v0.3.0 adds process inspection and selected process actions.
