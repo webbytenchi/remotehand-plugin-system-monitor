@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.2.1
+
+Bugfix release for alert delivery setting persistence.
+
+### Fixed
+- Fixed Warning, Critical, and Recovered Sound/Notification checkbox changes reverting after Save Settings.
+- Alert delivery checkbox choices now persist across Settings tab changes and full RemoteHand restarts.
+- Added a regression test covering the alert-delivery settings collector.
+
 ## v0.2.0
 
 First GPU-enabled System Monitor release.
