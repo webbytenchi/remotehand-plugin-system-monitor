@@ -16,13 +16,9 @@ mod imp {
         BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HGDIOBJ,
     };
     use windows::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_SMALLICON};
-    use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
     use windows::Win32::UI::WindowsAndMessaging::{
-        BringWindowToTop, DestroyIcon, DrawIconEx, EnumWindows, GetForegroundWindow,
-        GetWindow, GetWindowTextLengthW, GetWindowThreadProcessId, IsIconic,
-        IsWindowVisible, SetForegroundWindow, SetWindowPos, ShowWindow, DI_NORMAL,
-        GW_OWNER, HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE,
-        SWP_SHOWWINDOW, SW_RESTORE,
+        DestroyIcon, DrawIconEx, EnumWindows, GetWindowThreadProcessId,
+        IsWindowVisible, DI_NORMAL,
     };
 
     unsafe extern "system" fn enum_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
@@ -89,73 +85,6 @@ mod imp {
         }
     }
 
-    struct FocusTarget {
-        pid: u32,
-        preferred: Option<HWND>,
-        fallback: Option<HWND>,
-    }
-
-    unsafe extern "system" fn enum_focus_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
-        let target = &mut *(lparam.0 as *mut FocusTarget);
-        if !IsWindowVisible(hwnd).as_bool() {
-            return BOOL(1);
-        }
-        let mut pid = 0u32;
-        GetWindowThreadProcessId(hwnd, Some(&mut pid));
-        if pid != target.pid {
-            return BOOL(1);
-        }
-        if target.fallback.is_none() {
-            target.fallback = Some(hwnd);
-        }
-        let unowned = GetWindow(hwnd, GW_OWNER).map(|owner| owner.0.is_null()).unwrap_or(true);
-        let titled = GetWindowTextLengthW(hwnd) > 0;
-        if unowned && titled {
-            target.preferred = Some(hwnd);
-            return BOOL(0);
-        }
-        BOOL(1)
-    }
-
-    pub fn focus_process_window(pid: u32) -> Result<(), String> {
-        if pid == 0 {
-            return Err("process has no focusable window".to_string());
-        }
-        let mut target = FocusTarget { pid, preferred: None, fallback: None };
-        unsafe {
-            let _ = EnumWindows(Some(enum_focus_window), LPARAM((&mut target as *mut FocusTarget) as isize));
-            let hwnd = target.preferred.or(target.fallback).ok_or_else(|| "process has no visible window".to_string())?;
-            if IsIconic(hwnd).as_bool() {
-                let _ = ShowWindow(hwnd, SW_RESTORE);
-            }
-
-            // First make the target visibly rise even on systems that enforce
-            // foreground-lock restrictions, then ask Windows for keyboard focus.
-            let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
-            let _ = SetWindowPos(hwnd, Some(HWND_NOTOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
-
-            let foreground = GetForegroundWindow();
-            let current_thread = GetCurrentThreadId();
-            let target_thread = GetWindowThreadProcessId(hwnd, None);
-            let foreground_thread = if foreground.0.is_null() { 0 } else { GetWindowThreadProcessId(foreground, None) };
-            if foreground_thread != 0 && foreground_thread != current_thread {
-                let _ = AttachThreadInput(current_thread, foreground_thread, true);
-            }
-            if target_thread != 0 && target_thread != current_thread {
-                let _ = AttachThreadInput(current_thread, target_thread, true);
-            }
-            let _ = BringWindowToTop(hwnd);
-            let _ = SetForegroundWindow(hwnd);
-            if target_thread != 0 && target_thread != current_thread {
-                let _ = AttachThreadInput(current_thread, target_thread, false);
-            }
-            if foreground_thread != 0 && foreground_thread != current_thread {
-                let _ = AttachThreadInput(current_thread, foreground_thread, false);
-            }
-        }
-        Ok(())
-    }
-
     pub fn open_file_location(path: &str) -> Result<(), String> {
         let path = Path::new(path);
         if !path.is_file() {
@@ -178,7 +107,7 @@ mod imp {
 }
 
 #[cfg(windows)]
-pub use imp::{focus_process_window, icon_data_url, open_file_location, visible_process_ids};
+pub use imp::{icon_data_url, open_file_location, visible_process_ids};
 
 #[cfg(not(windows))]
 pub fn visible_process_ids() -> HashSet<u32> {
@@ -188,11 +117,6 @@ pub fn visible_process_ids() -> HashSet<u32> {
 #[cfg(not(windows))]
 pub fn icon_data_url(_: &str) -> Option<String> {
     None
-}
-
-#[cfg(not(windows))]
-pub fn focus_process_window(_: u32) -> Result<(), String> {
-    Err("process focus is only supported on Windows".to_string())
 }
 
 #[cfg(not(windows))]
