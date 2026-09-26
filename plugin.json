@@ -22,7 +22,7 @@
       {
         "id": "system-monitor",
         "title": "System Monitor",
-        "icon": "gauge",
+        "icon": "assets/sidebar.svg",
         "panel": "system-monitor"
       }
     ],
