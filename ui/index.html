@@ -42,7 +42,6 @@
 </main>
 <div id="processContextMenu" class="process-context-menu" hidden>
 <button type="button" data-process-action="details">Details</button>
-<button type="button" data-process-action="focus">Open / Focus window</button>
 <button type="button" data-process-action="location">Open file location</button>
 <div class="process-context-sep"></div>
 <button type="button" data-process-action="copy-toggle">Copy <span>›</span></button>
@@ -163,12 +162,6 @@ if(compact.node&&compact.node.children)total+=processCompactHiddenCount(compact.
 return total
 }
 function closeProcessContextMenu(){el("processContextMenu").hidden=true;el("processCopySubmenu").hidden=true;processMenuTarget=null}
-function findFocusableProcess(p){
-if(p&&p.windowVisible)return p;
-var children=p&&p.children||[];
-for(var i=0;i<children.length;i++){var found=findFocusableProcess(children[i]);if(found)return found}
-return null
-}
 function positionCopySubmenu(){
 var menu=el("processContextMenu"),sub=el("processCopySubmenu"),rect=menu.getBoundingClientRect();
 sub.hidden=false;
@@ -197,8 +190,8 @@ flattenVisibleProcessRows([shown],depth+1,out)
 }
 function openProcessContextMenu(ev,p){
 ev.preventDefault();processMenuTarget=p;
-var menu=el("processContextMenu"),focus=menu.querySelector('[data-process-action="focus"]'),location=menu.querySelector('[data-process-action="location"]');
-focus.disabled=!findFocusableProcess(p);location.disabled=!p.path;
+var menu=el("processContextMenu"),location=menu.querySelector('[data-process-action="location"]');
+location.disabled=!p.path;
 menu.hidden=false;el("processCopySubmenu").hidden=true;
 var x=Math.min(ev.clientX,window.innerWidth-menu.offsetWidth-8),y=Math.min(ev.clientY,window.innerHeight-menu.offsetHeight-8);
 menu.style.left=Math.max(8,x)+"px";menu.style.top=Math.max(8,y)+"px"
@@ -231,7 +224,6 @@ function runProcessAction(action){
 var p=processMenuTarget;if(!p)return;
 if(action==="details"){showProcessDetails(p);return}
 if(action==="copy-toggle"){if(el("processCopySubmenu").hidden)positionCopySubmenu();else el("processCopySubmenu").hidden=true;return}
-if(action==="focus"){var target=findFocusableProcess(p);if(!target){toast("No visible window found for this process group","error");return}request("system.process.focus",{pid:target.pid}).then(function(){closeProcessContextMenu()}).catch(function(e){toast(String(e),"error")});return}
 if(action==="location"){request("system.process.open_file_location",{path:p.path||""}).then(function(){closeProcessContextMenu()}).catch(function(e){toast(String(e),"error")});return}
 if(action==="end"){showEndProcessConfirm(p);return}
 }
