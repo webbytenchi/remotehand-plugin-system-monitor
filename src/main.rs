@@ -1062,6 +1062,17 @@ fn main()->Result<(),String>{
                     Err(error)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error}
                 }
             }
+            "system.process.copy"=>{
+                let text=request.params.get("text").and_then(Value::as_str).unwrap_or("");
+                if text.is_empty(){
+                    PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error:"nothing to copy".to_string()}
+                }else{
+                    match host_request(&mut input,&output_tx,&mut host_request_id,"clipboard.write",json!({"text":text})){
+                        Ok(result)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result,error:String::new()},
+                        Err(error)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error}
+                    }
+                }
+            }
             "system.process.end"=>{
                 let pid=request.params.get("pid").and_then(Value::as_u64).unwrap_or(0) as u32;
                 let expected_name=request.params.get("name").and_then(Value::as_str).unwrap_or("");
