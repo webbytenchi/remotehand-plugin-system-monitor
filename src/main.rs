@@ -1035,13 +1035,6 @@ fn main()->Result<(),String>{
                 }
                 PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:Value::Object(icons),error:String::new()}
             }
-            "system.process.focus"=>{
-                let pid=request.params.get("pid").and_then(Value::as_u64).unwrap_or(0) as u32;
-                match process_windows::focus_process_window(pid){
-                    Ok(())=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"focused":pid}),error:String::new()},
-                    Err(error)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error}
-                }
-            }
             "system.process.open_file_location"=>{
                 let path=request.params.get("path").and_then(Value::as_str).unwrap_or("").trim();
                 match process_windows::open_file_location(path){
