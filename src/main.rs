@@ -857,6 +857,11 @@ mod tests{
     #[test] fn config_rejects_overlapping_thresholds(){let mut c=Config::default();c.temperature.healthy_max=95.0;c.temperature.critical_min=90.0;assert!(normalize_config(c).is_err());}
     #[test] fn recovered_transition_is_actionable_but_initial_healthy_is_not(){let c=metric_config(70.0,95.0);assert!(!AlertTransition::new("cpu","CPU",Some(10.0),Health::Unavailable,Health::Healthy,c.clone()).actionable());assert!(AlertTransition::new("cpu","CPU",Some(10.0),Health::Warning,Health::Healthy,c).actionable());}
     #[test] fn default_recovered_alert_sounds_without_notification(){let c=metric_config(70.0,95.0);let d=alert_delivery_for(&c,Health::Healthy);assert!(d.sound);assert!(!d.notification);}
+    #[test] fn ui_persists_alert_delivery_checkboxes_separately(){
+        let ui=include_str!("../ui/index.html");
+        assert!(ui.contains("box.querySelectorAll(\"[data-path][data-alert][data-alert-field]\")"));
+        assert!(!ui.contains("if(i.dataset.alert){var alert=target[i.dataset.alert]"));
+    }
     #[test] fn visualization_defaults_match_metric_behavior(){let c=Config::default();assert_eq!(c.cpu.overview_visualization.as_deref(),Some("graph"));assert_eq!(c.cpu.topbar_visualization.as_deref(),Some("graph"));assert_eq!(c.memory.overview_visualization.as_deref(),Some("bar"));assert_eq!(c.memory.topbar_visualization.as_deref(),Some("bar"));}
     #[test] fn gpu_defaults_are_per_adapter_and_optional_temperature(){
         let g=gpu_config(2,"Example GPU");
