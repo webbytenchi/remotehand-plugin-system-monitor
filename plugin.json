@@ -22,7 +22,7 @@
       {
         "id": "system-monitor",
         "title": "System Monitor",
-        "icon": "monitor-pulse",
+        "icon": "activity",
         "panel": "system-monitor"
       }
     ],
