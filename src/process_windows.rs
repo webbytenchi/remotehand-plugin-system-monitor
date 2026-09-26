@@ -18,9 +18,11 @@ mod imp {
     use windows::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_SMALLICON};
     use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
     use windows::Win32::UI::WindowsAndMessaging::{
-        BringWindowToTop, DestroyIcon, DrawIconEx, EnumWindows,
-        GetForegroundWindow, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
-        SetForegroundWindow, ShowWindow, DI_NORMAL, SW_RESTORE,
+        BringWindowToTop, DestroyIcon, DrawIconEx, EnumWindows, GetForegroundWindow,
+        GetWindow, GetWindowTextLengthW, GetWindowThreadProcessId, IsIconic,
+        IsWindowVisible, SetForegroundWindow, SetWindowPos, ShowWindow, DI_NORMAL,
+        GW_OWNER, HWND_NOTOPMOST, HWND_TOPMOST, SWP_NOMOVE, SWP_NOSIZE,
+        SWP_SHOWWINDOW, SW_RESTORE,
     };
 
     unsafe extern "system" fn enum_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
