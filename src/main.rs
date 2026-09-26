@@ -1031,6 +1031,23 @@ fn main()->Result<(),String>{
                     PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"dataUrl":data_url}),error:String::new()}
                 }
             }
+            "system.process.icons"=>{
+                let paths=request.params.get("paths").and_then(Value::as_array).cloned().unwrap_or_default();
+                let mut icons=serde_json::Map::new();
+                for path in paths.into_iter().filter_map(|v|v.as_str().map(str::trim).filter(|s|!s.is_empty()).map(str::to_string)).take(100){
+                    let cached={store.lock().map_err(|_|"state lock poisoned".to_string())?.process_icon_cache.get(&path).cloned()};
+                    let data_url=match cached{
+                        Some(v)=>v,
+                        None=>{
+                            let v=process_windows::icon_data_url(&path);
+                            if let Ok(mut guard)=store.lock(){guard.process_icon_cache.insert(path.clone(),v.clone());}
+                            v
+                        }
+                    };
+                    icons.insert(path,data_url.map(Value::String).unwrap_or(Value::Null));
+                }
+                PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:Value::Object(icons),error:String::new()}
+            }
             "system.config.set"=>{
                 let parsed:Result<Config,_>=serde_json::from_value(request.params.clone());
                 match parsed.map_err(|e|format!("invalid config: {e}")).and_then(normalize_config){
