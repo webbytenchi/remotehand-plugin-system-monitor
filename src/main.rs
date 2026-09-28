@@ -13,6 +13,7 @@ use gpu_windows::{GpuAdapterInfo, GpuSampler, GpuTelemetry};
 
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const STORAGE_KEY: &str = "config-v1";
+const PROCESS_UI_STORAGE_KEY: &str = "process-ui-v1";
 const MAX_HISTORY_SECONDS: u64 = 60 * 60;
 const DEFAULT_SAMPLE_SECONDS: u64 = 2;
 
@@ -1101,6 +1102,28 @@ fn main()->Result<(),String>{
                 }else{
                     match host_request(&mut input,&output_tx,&mut host_request_id,"clipboard.write",json!({"text":text})){
                         Ok(result)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result,error:String::new()},
+                        Err(error)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error}
+                    }
+                }
+            }
+            "system.ui.process.get"=>{
+                match host_request(&mut input,&output_tx,&mut host_request_id,"storage.get",json!({"key":PROCESS_UI_STORAGE_KEY})){
+                    Ok(result)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:result.get("value").cloned().unwrap_or(Value::Null),error:String::new()},
+                    Err(error)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error}
+                }
+            }
+            "system.ui.process.set"=>{
+                let value=&request.params;
+                let compact=value.get("compactTree").and_then(Value::as_bool);
+                let widths=value.get("columnWidths").and_then(Value::as_object);
+                let valid_widths=widths.map(|map|{
+                    map.len()<=16 && map.values().all(|v|v.as_f64().is_some_and(|n|n>=60.0&&n<=800.0))
+                }).unwrap_or(false);
+                if compact.is_none() || !valid_widths {
+                    PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error:"invalid process UI preferences".to_string()}
+                } else {
+                    match host_request(&mut input,&output_tx,&mut host_request_id,"storage.set",json!({"key":PROCESS_UI_STORAGE_KEY,"value":value})){
+                        Ok(_)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"stored":true}),error:String::new()},
                         Err(error)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error}
                     }
                 }
