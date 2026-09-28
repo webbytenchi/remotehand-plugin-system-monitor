@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.3.2
+
+Host-API cleanup and persistence release.
+
+### Changed
+- Process UI preferences now persist through RemoteHand plugin-scoped storage instead of browser `localStorage`.
+- Custom alert-sound selection now uses RemoteHand's native `files.open` host API.
+- Selected alert sounds are read by the plugin backend and returned to the UI as encoded audio.
+- Removed browser-side file reading and FileReader fallbacks for custom alert sounds.
+
+### Compatibility
+- Plugin API remains **v1**.
+- Existing monitoring, GPU visibility, process behavior, alerts, and saved settings remain compatible.
+
+### Verification
+- Rust tests passed with **17 tests and 0 failures**.
+- Windows release build passed.
+- Manual Windows acceptance confirmed process preference persistence, native sound picking, custom sound playback, and persistence after a full restart.
+
 ## v0.3.1
 
 Focused GPU-surface consistency bugfix.
