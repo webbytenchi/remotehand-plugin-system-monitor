@@ -70,7 +70,7 @@
 <div id="notice" class="notice" hidden><span id="noticeText" class="notice-text"></span><button id="noticeClose" class="notice-close" type="button" aria-label="Dismiss message">×</button></div>
 <script>
 (function(){"use strict";
-var bridge=window.remotehand,state={config:null,latest:null,history:[],gpu:{state:"pending",adapters:[],latest:[],history:[]}},minutes=15,chain=Promise.resolve(),settingsTab="general",settingsDraft=null,PROCESS_COLUMN_KEY="remotehand.system-monitor.process-columns.v1",PROCESS_COMPACT_KEY="remotehand.system-monitor.process-compact-tree.v1",processMenuTarget=null,processState={query:"",filter:"all",sort:"cpu",direction:"desc",page:1,pageSize:10,total:0,totalGroups:0,pageCount:1,rows:[],updatedAt:0,searchActive:false,compactTree:true,expanded:{},icons:{},columnWidths:{name:360,pid:90,cpu:90,memory:120,gpu:90,user:150,started:190}},processSearchTimer=null;
+var bridge=window.remotehand,state={config:null,latest:null,history:[],gpu:{state:"pending",adapters:[],latest:[],history:[]}},minutes=15,chain=Promise.resolve(),settingsTab="general",settingsDraft=null,processMenuTarget=null,processState={query:"",filter:"all",sort:"cpu",direction:"desc",page:1,pageSize:10,total:0,totalGroups:0,pageCount:1,rows:[],updatedAt:0,searchActive:false,compactTree:true,expanded:{},icons:{},columnWidths:{name:360,pid:90,cpu:90,memory:120,gpu:90,user:150,started:190}},processSearchTimer=null;
 function el(id){return document.getElementById(id)}function request(method,params){params=params||{};if(!bridge||!bridge.request)return Promise.reject(new Error("plugin bridge unavailable"));var run=function(){return bridge.request(method,params)};var p=chain.then(run,run);chain=p.catch(function(){});return p}
 function fmt(v,u){return v!==null&&v!==undefined&&v!==""&&Number.isFinite(Number(v))?Math.round(Number(v))+u:"—"}function bytes(v){if(v==null)return"—";var n=Number(v),u=["B","KB","MB","GB","TB"],i=0;while(n>=1024&&i<u.length-1){n/=1024;i++}return n.toFixed(i>=3?1:0)+" "+u[i]}
 function toast(t,type){var n=el("notice");el("noticeText").textContent=t;n.className="notice "+(type||"");n.hidden=false;clearTimeout(n.t);n.t=setTimeout(function(){n.hidden=true},3000)}el("noticeClose").onclick=function(){el("notice").hidden=true}
@@ -117,8 +117,9 @@ var body=el("metrics");body.innerHTML="";defs.forEach(function(r){var st=stats(r
 function processStarted(v){if(!v)return"—";try{return new Date(Number(v)*1000).toLocaleString()}catch(e){return"—"}}
 function processSortLabel(key,label){if(processState.sort!==key)return label;return label+(processState.direction==="asc"?" ▲":" ▼")}
 function processNodeCount(n){return 1+(n.children||[]).reduce(function(sum,c){return sum+processNodeCount(c)},0)}
-function loadProcessColumnWidths(){try{var saved=JSON.parse(localStorage.getItem(PROCESS_COLUMN_KEY)||"null");if(saved&&typeof saved==="object")Object.keys(processState.columnWidths).forEach(function(k){var v=Number(saved[k]);if(Number.isFinite(v)&&v>=60&&v<=800)processState.columnWidths[k]=v})}catch(e){}}
-function saveProcessColumnWidths(){try{localStorage.setItem(PROCESS_COLUMN_KEY,JSON.stringify(processState.columnWidths))}catch(e){}}
+function applyStoredProcessUi(value){if(!value||typeof value!=="object")return;if(value.columnWidths&&typeof value.columnWidths==="object")Object.keys(processState.columnWidths).forEach(function(k){var v=Number(value.columnWidths[k]);if(Number.isFinite(v)&&v>=60&&v<=800)processState.columnWidths[k]=v});if(typeof value.compactTree==="boolean")processState.compactTree=value.compactTree}
+function saveProcessUi(){request("system.ui.process.set",{columnWidths:processState.columnWidths,compactTree:processState.compactTree}).catch(function(){})}
+function saveProcessColumnWidths(){saveProcessUi()}
 function applyProcessColumnWidths(){document.querySelectorAll("#processTable col[data-process-col]").forEach(function(col){var key=col.dataset.processCol,w=processState.columnWidths[key];if(w)col.style.width=w+"px"})}
 function setupProcessColumnResize(){
 document.querySelectorAll("#processTable th[data-process-sort]").forEach(function(th){
@@ -287,11 +288,11 @@ document.addEventListener("keydown",function(ev){if(ev.key==="Escape"){closeProc
 window.addEventListener("blur",closeProcessContextMenu);window.addEventListener("scroll",closeProcessContextMenu,true)
 }
 function setupProcesses(){
-setupProcessContextMenu();loadProcessColumnWidths();try{var savedCompact=localStorage.getItem(PROCESS_COMPACT_KEY);if(savedCompact!==null)processState.compactTree=savedCompact!=="false"}catch(e){};el("processCompactTree").checked=processState.compactTree;applyProcessColumnWidths();setupProcessColumnResize();
+setupProcessContextMenu();el("processCompactTree").checked=processState.compactTree;applyProcessColumnWidths();setupProcessColumnResize();request("system.ui.process.get").then(function(value){applyStoredProcessUi(value);el("processCompactTree").checked=processState.compactTree;applyProcessColumnWidths()}).catch(function(){});
 el("processSearch").oninput=function(){processState.query=this.value;clearTimeout(processSearchTimer);processSearchTimer=setTimeout(function(){loadProcesses(true)},250)};
 el("processFilter").onchange=function(){processState.filter=this.value;loadProcesses(true)};
 el("processPageSize").onchange=function(){processState.pageSize=Number(this.value)||10;processState.page=1;renderProcesses()};
-el("processCompactTree").onchange=function(){processState.compactTree=this.checked;try{localStorage.setItem(PROCESS_COMPACT_KEY,String(processState.compactTree))}catch(e){};renderProcesses()};
+el("processCompactTree").onchange=function(){processState.compactTree=this.checked;saveProcessUi();renderProcesses()};
 el("processRefresh").onclick=function(){loadProcesses(false)};
 el("processPrev").onclick=function(){if(processState.page>1){processState.page--;renderProcesses()}};
 el("processNext").onclick=function(){if(processState.page<processState.pageCount){processState.page++;renderProcesses()}};
