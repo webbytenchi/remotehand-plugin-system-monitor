@@ -12,6 +12,7 @@
     }
   },
   "permissions": [
+    "files.open",
     "files.save",
     "clipboard.write",
     "storage.plugin",
