@@ -1,5 +1,43 @@
 # Changelog
 
+## v0.4.0
+
+Disk monitoring and live severity-surface release.
+
+### Added
+- Per-volume disk discovery with stable identities, filesystem/type metadata, capacity, used/free space, utilization, and read/write throughput telemetry.
+- Disk Overview cards with a centered Used vs Free donut, total capacity, and live Read/Write history graphs.
+- Per-disk usage Settings with Healthy / Warning / Critical thresholds, colors, alert delivery, top-bar visibility, and tray visibility.
+- Disk usage rows in the Metrics table with current, minimum, average, peak, threshold, and capacity values.
+- Disk telemetry in CSV export, including usage, used/free/total bytes, and read/write bytes per second.
+- Live warning/critical top-bar alert icons using each metric's configured Warning/Critical color.
+
+### Changed
+- Overview order is now CPU + Memory, Per-core activity, GPUs, Disks, then Metrics.
+- Metrics order follows the same high-level grouping: CPU, Memory, GPUs, then Disks.
+- Disk Usage uses a compact part-to-whole donut instead of the generic usage bar in Overview.
+- Disk Read and Write are presented as time-series graphs.
+- Alert Test notifications now target the same tray/surface IDs as live alerts.
+- GPU live-alert notification IDs now match emitted GPU surface IDs.
+
+### Fixed
+- Disk Warning/Critical notifications no longer get ignored because of tray-item ID mismatches.
+- Disk alert Test notifications now work correctly.
+- GPU alert notification routing now uses the same canonical metric IDs as GPU top-bar/tray surfaces.
+
+### Deferred
+- Disk temperature / SMART / NVMe health telemetry remains out of scope for this release.
+
+### Compatibility
+- Plugin API remains **v1**.
+- Existing CPU, Memory, GPU, Processes, settings, and alert behavior remain compatible.
+
+### Verification
+- Rust tests passed with **30 tests and 0 failures** before the v0.4.0 versioning pass.
+- Windows release build passed.
+- Manual Windows acceptance covered disk telemetry, thresholds, top-bar/tray surfaces, live/test notifications, CSV export, Overview/Metrics layout, throughput graphs, and the disk usage donut.
+
+
 ## v0.3.2
 
 Host-API cleanup and persistence release.
