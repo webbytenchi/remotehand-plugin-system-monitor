@@ -8,7 +8,7 @@ use std::io::{self, Read, Write};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use sysinfo::{Pid, ProcessesToUpdate, System, Users};
+use sysinfo::{Disks, Pid, ProcessesToUpdate, System, Users};
 
 mod gpu_windows;
 mod process_windows;
@@ -275,6 +275,35 @@ fn normalize_config(mut c: Config) -> Result<Config, String> {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct DiskTelemetry {
+    id: String,
+    name: String,
+    mount_point: String,
+    file_system: String,
+    kind: String,
+    removable: bool,
+    total_bytes: u64,
+    used_bytes: u64,
+    free_bytes: u64,
+    usage_percent: f64,
+    read_bytes_per_second: f64,
+    write_bytes_per_second: f64,
+}
+
+fn stable_disk_id(mount_point: &str, name: &str) -> String {
+    let normalized = mount_point
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_ascii_lowercase();
+    if normalized.is_empty() {
+        name.trim().to_ascii_lowercase()
+    } else {
+        normalized
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct Sample {
     timestamp: u64,
     cpu_percent: f64,
@@ -288,6 +317,7 @@ struct Sample {
     memory_used_bytes: u64,
     memory_available_bytes: u64,
     memory_total_bytes: u64,
+    disks: Vec<DiskTelemetry>,
 }
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -298,17 +328,51 @@ struct TemperatureSensor {
 
 struct WindowsSystemProvider {
     system: System,
+    disks: Disks,
+    last_disk_sample_ms: u64,
 }
 impl WindowsSystemProvider {
     fn new() -> Self {
         let mut system = System::new_all();
         system.refresh_cpu_usage();
         system.refresh_memory();
-        Self { system }
+        Self {
+            system,
+            disks: Disks::new_with_refreshed_list(),
+            last_disk_sample_ms: now_ms(),
+        }
     }
     fn sample(&mut self) -> Sample {
         self.system.refresh_cpu_usage();
         self.system.refresh_memory();
+        self.disks.refresh(true);
+
+        let disk_timestamp = now_ms();
+        let elapsed_seconds = ((disk_timestamp.saturating_sub(self.last_disk_sample_ms)) as f64 / 1000.0).max(0.001);
+        self.last_disk_sample_ms = disk_timestamp;
+        let disks = self.disks.list().iter().map(|disk| {
+            let total_bytes = disk.total_space();
+            let free_bytes = disk.available_space().min(total_bytes);
+            let used_bytes = total_bytes.saturating_sub(free_bytes);
+            let usage_percent = if total_bytes == 0 { 0.0 } else { used_bytes as f64 / total_bytes as f64 * 100.0 };
+            let usage = disk.usage();
+            let name = disk.name().to_string_lossy().into_owned();
+            let mount_point = disk.mount_point().to_string_lossy().into_owned();
+            DiskTelemetry {
+                id: stable_disk_id(&mount_point, &name),
+                name,
+                mount_point,
+                file_system: disk.file_system().to_string_lossy().into_owned(),
+                kind: format!("{:?}", disk.kind()),
+                removable: disk.is_removable(),
+                total_bytes,
+                used_bytes,
+                free_bytes,
+                usage_percent,
+                read_bytes_per_second: usage.read_bytes as f64 / elapsed_seconds,
+                write_bytes_per_second: usage.written_bytes as f64 / elapsed_seconds,
+            }
+        }).collect::<Vec<_>>();
 
         // CPU temperature is intentionally deferred for the v0.1 dependency-free baseline.
         // Keep the normalized fields unavailable so a future provider can be added without
@@ -336,6 +400,7 @@ impl WindowsSystemProvider {
             memory_used_bytes: used,
             memory_available_bytes: available,
             memory_total_bytes: total,
+            disks,
         }
     }
 }
@@ -1230,6 +1295,13 @@ fn main()->Result<(),String>{
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test] fn disk_identity_is_stable_for_equivalent_windows_mount_paths(){
+        assert_eq!(stable_disk_id("C:\\", "System"), "c:");
+        assert_eq!(stable_disk_id("c:/", "Renamed"), "c:");
+    }
+    #[test] fn disk_identity_falls_back_to_name_without_mount_point(){
+        assert_eq!(stable_disk_id("", "Portable SSD"), "portable ssd");
+    }
     #[test] fn thresholds_are_three_state(){let c=metric_config(60.0,90.0);assert_eq!(health(Some(60.0),&c),Health::Healthy);assert_eq!(health(Some(70.0),&c),Health::Warning);assert_eq!(health(Some(90.0),&c),Health::Critical);}
     #[test] fn unavailable_is_not_zero(){let c=metric_config(60.0,90.0);assert_eq!(health(None,&c),Health::Unavailable);}
     #[test] fn transitions_require_two_samples(){let mut t=TransitionTracker::default();assert!(t.observe(Health::Healthy).is_none());assert_eq!(t.observe(Health::Healthy),Some((Health::Unavailable,Health::Healthy)));assert!(t.observe(Health::Critical).is_none());assert_eq!(t.observe(Health::Critical),Some((Health::Healthy,Health::Critical)));}
@@ -1418,9 +1490,9 @@ mod tests{
         let cfg=metric_config(60.0,90.0);
         let now=now_ms();
         let mut history=VecDeque::new();
-        history.push_back(Sample{timestamp:now-4000,cpu_percent:40.0,core_percent:vec![],temperature_c:None,temperature_source:None,temperature_sensors:vec![],temperature_provider:String::new(),temperature_error:None,memory_percent:0.0,memory_used_bytes:0,memory_available_bytes:0,memory_total_bytes:0});
-        history.push_back(Sample{timestamp:now-2000,cpu_percent:75.0,core_percent:vec![],temperature_c:None,temperature_source:None,temperature_sensors:vec![],temperature_provider:String::new(),temperature_error:None,memory_percent:0.0,memory_used_bytes:0,memory_available_bytes:0,memory_total_bytes:0});
-        history.push_back(Sample{timestamp:now,cpu_percent:95.0,core_percent:vec![],temperature_c:None,temperature_source:None,temperature_sensors:vec![],temperature_provider:String::new(),temperature_error:None,memory_percent:0.0,memory_used_bytes:0,memory_available_bytes:0,memory_total_bytes:0});
+        history.push_back(Sample{timestamp:now-4000,cpu_percent:40.0,core_percent:vec![],temperature_c:None,temperature_source:None,temperature_sensors:vec![],temperature_provider:String::new(),temperature_error:None,memory_percent:0.0,memory_used_bytes:0,memory_available_bytes:0,memory_total_bytes:0,disks:vec![]});
+        history.push_back(Sample{timestamp:now-2000,cpu_percent:75.0,core_percent:vec![],temperature_c:None,temperature_source:None,temperature_sensors:vec![],temperature_provider:String::new(),temperature_error:None,memory_percent:0.0,memory_used_bytes:0,memory_available_bytes:0,memory_total_bytes:0,disks:vec![]});
+        history.push_back(Sample{timestamp:now,cpu_percent:95.0,core_percent:vec![],temperature_c:None,temperature_source:None,temperature_sensors:vec![],temperature_provider:String::new(),temperature_error:None,memory_percent:0.0,memory_used_bytes:0,memory_available_bytes:0,memory_total_bytes:0,disks:vec![]});
         let series=recent_series(&history,|s|Some(s.cpu_percent),60,&cfg);
         assert_eq!(series[0]["color"],cfg.healthy_color);
         assert_eq!(series[1]["color"],cfg.warning_color);
