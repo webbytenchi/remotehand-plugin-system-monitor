@@ -1440,6 +1440,13 @@ mod tests{
         c.disks.insert("c:".into(),d);
         assert!(normalize_config(c).is_err());
     }
+    #[test] fn disk_overview_graphs_read_and_write_throughput(){
+        let ui=include_str!("../ui/index.html");
+        assert!(ui.contains("function drawThroughput("));
+        assert!(ui.contains("\"readBytesPerSecond\""));
+        assert!(ui.contains("\"writeBytesPerSecond\""));
+        assert!(ui.contains("canvas.id=\"disk-\"+safeId+\"-\"+throughputKey"));
+    }
     #[test] fn overview_keeps_cores_near_cpu_and_metrics_include_disks(){
         let ui=include_str!("../ui/index.html");
         let cpu=ui.find("CPU Utilization").unwrap();
