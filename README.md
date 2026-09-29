@@ -1,20 +1,29 @@
 # RemoteHand System Monitor
 
-Status: **v0.3.1**
+Status: **v0.4.0**
 
 RemoteHand System Monitor is a Windows-first plugin for local CPU, memory, and GPU monitoring. It keeps hardware-monitoring semantics inside the plugin while RemoteHand core provides only generic plugin infrastructure.
 
-## v0.3.1 scope
+## v0.4.0 scope
 
-v0.3.1 is a focused GPU-surface consistency bugfix release.
+v0.4.0 adds per-volume disk monitoring and live severity indicators while keeping hardware-monitoring semantics inside the plugin.
 
-- applies the existing duplicate/inactive GPU-adapter visibility rule to top-bar and system-tray contributions
-- keeps Overview, Settings, top-bar, and tray GPU visibility aligned
-- preserves legitimate idle GPUs at 0% utilization
-- suppresses only the duplicate logical adapter when an otherwise identical adapter is the sole instance with meaningful telemetry
-- adds regression coverage for duplicate-LUID filtering and emitted top-bar/tray surfaces
+- local disk discovery with stable per-volume identities
+- per-volume used, free, total, and utilization telemetry
+- live read/write throughput telemetry with history graphs
+- compact Used vs Free donut visualization with total capacity
+- per-disk usage thresholds with Healthy / Warning / Critical states
+- independent Warning, Critical, and Recovered sound/notification delivery
+- optional per-disk top-bar and system-tray surfaces
+- live warning/critical icon support on top-bar metrics using each metric's configured alert color
+- disk usage in the Metrics table with current, minimum, average, peak, thresholds, and capacity
+- disk telemetry included in CSV export
+- Overview reordered so per-core CPU activity stays adjacent to the CPU summary
+- Metrics ordering aligned with Overview: CPU, Memory, GPUs, then Disks
+- notification Test actions aligned with their actual tray/surface IDs for CPU, Memory, GPU, and Disk metrics
+- GPU live-alert notification IDs aligned with emitted GPU surface IDs
 
-This fixes the case where a silent duplicate Intel GPU LUID could be hidden correctly in Overview and Settings but still remain visible in the RemoteHand top bar without a corresponding Settings control.
+Disk temperature is intentionally deferred because the current sysinfo::Disks provider does not expose it portably on Windows; adding SMART/NVMe temperature would require a separate native provider.
 
 ## v0.3.0 scope
 
@@ -82,7 +91,7 @@ CSV files are suggested using the local-time pattern:
 system-monitor-history-YYYY-MM-DD-HHmm.csv
 ```
 
-Exports contain sampled telemetry for the selected history window, including timestamp, CPU utilization, memory values, per-core CPU utilization, and available per-GPU utilization, memory, and temperature fields.
+Exports contain sampled telemetry for the selected history window, including timestamp, CPU utilization, memory values, per-core CPU utilization, available per-GPU utilization/memory/temperature fields, and per-disk usage, used/free/total bytes, plus read/write bytes per second.
 
 ## Platform direction
 
@@ -108,9 +117,10 @@ Do not add CPU-, GPU-, sensor-, vendor-, or hardware-specific logic to RemoteHan
 
 ## Current non-goals
 
-Not in v0.3.0:
+Not in v0.4.0:
 
 - CPU temperature
+- disk temperature / SMART or NVMe health telemetry
 - Linux implementation
 - fan control
 - voltage, tuning, or overclocking
@@ -118,4 +128,4 @@ Not in v0.3.0:
 - persistent telemetry database
 - motherboard-wide sensor-suite replacement
 
-See `V0.1.0-DESIGN.md` for the original baseline design. v0.2.0 extended that baseline with native Windows GPU monitoring, and v0.3.0 adds process inspection and selected process actions.
+See `V0.1.0-DESIGN.md` for the original baseline design. v0.2.0 extended that baseline with native Windows GPU monitoring, v0.3.0 added process inspection and selected process actions, and v0.4.0 adds per-volume disk monitoring and disk-aware alert/surface integration.
