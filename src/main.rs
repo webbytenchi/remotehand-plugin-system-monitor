@@ -315,6 +315,14 @@ struct DiskTelemetry {
 
 fn disk_metric_id(disk_id:&str)->String{format!("disk-{disk_id}-usage")}
 fn gpu_metric_id(index:u32,kind:&str)->String{format!("gpu{index}-{kind}")}
+fn disk_rate_bytes_per_second(delta_bytes:u64,elapsed_ms:u64)->f64{
+    if elapsed_ms==0{0.0}else{delta_bytes as f64/(elapsed_ms as f64/1000.0)}
+}
+fn csv_disk_key(id:&str)->String{
+    let mut out=id.chars().map(|ch|if ch.is_ascii_alphanumeric(){ch.to_ascii_lowercase()}else{'_'}).collect::<String>();
+    while out.contains("__"){out=out.replace("__","_");}
+    out.trim_matches('_').to_string()
+}
 
 fn stable_disk_id(mount_point: &str, name: &str) -> String {
     let normalized = mount_point
@@ -374,7 +382,7 @@ impl WindowsSystemProvider {
         self.disks.refresh(true);
 
         let disk_timestamp = now_ms();
-        let elapsed_seconds = ((disk_timestamp.saturating_sub(self.last_disk_sample_ms)) as f64 / 1000.0).max(0.001);
+        let elapsed_ms = disk_timestamp.saturating_sub(self.last_disk_sample_ms);
         self.last_disk_sample_ms = disk_timestamp;
         let disks = self.disks.list().iter().map(|disk| {
             let total_bytes = disk.total_space();
@@ -395,8 +403,8 @@ impl WindowsSystemProvider {
                 used_bytes,
                 free_bytes,
                 usage_percent,
-                read_bytes_per_second: usage.read_bytes as f64 / elapsed_seconds,
-                write_bytes_per_second: usage.written_bytes as f64 / elapsed_seconds,
+                read_bytes_per_second: disk_rate_bytes_per_second(usage.read_bytes,elapsed_ms),
+                write_bytes_per_second: disk_rate_bytes_per_second(usage.written_bytes,elapsed_ms),
             }
         }).collect::<Vec<_>>();
 
@@ -1049,10 +1057,17 @@ fn csv_for(history:&VecDeque<Sample>,gpu_history:&VecDeque<GpuSnapshot>,minutes:
     let cutoff=now_ms().saturating_sub(minutes.clamp(1,60)*60*1000);
     let max_cores=history.iter().map(|s|s.core_percent.len()).max().unwrap_or(0);
     let adapters:Vec<GpuTelemetry>=gpu_history.back().map(|s|s.gpus.clone()).unwrap_or_default();
+    let disks:Vec<DiskTelemetry>=history.back().map(|s|s.disks.clone()).unwrap_or_default();
     let mut out=String::from("timestamp_ms,cpu_percent,memory_percent,memory_used_bytes,memory_available_bytes,memory_total_bytes");
     for i in 0..max_cores{out.push_str(&format!(",core_{i}_percent"));}
     for gpu in &adapters{
         out.push_str(&format!(",gpu_{}_utilization_percent,gpu_{}_dedicated_used_bytes,gpu_{}_shared_used_bytes,gpu_{}_temperature_c",gpu.index,gpu.index,gpu.index,gpu.index));
+    }
+    for disk in &disks{
+        let key=csv_disk_key(&disk.id);
+        out.push_str(&format!(
+            ",disk_{key}_usage_percent,disk_{key}_used_bytes,disk_{key}_free_bytes,disk_{key}_total_bytes,disk_{key}_read_bytes_per_second,disk_{key}_write_bytes_per_second"
+        ));
     }
     out.push('\n');
     for s in history.iter().filter(|s|s.timestamp>=cutoff){
@@ -1070,6 +1085,21 @@ fn csv_for(history:&VecDeque<Sample>,gpu_history:&VecDeque<GpuSnapshot>,minutes:
             if let Some(v)=gpu.and_then(|g|g.shared_used_bytes){out.push_str(&v.to_string());}
             out.push(',');
             if let Some(v)=gpu.and_then(|g|g.temperature_c){out.push_str(&format!("{v:.1}"));}
+        }
+        for disk_def in &disks{
+            let disk=s.disks.iter().find(|d|d.id==disk_def.id);
+            out.push(',');
+            if let Some(d)=disk{out.push_str(&format!("{:.2}",d.usage_percent));}
+            out.push(',');
+            if let Some(d)=disk{out.push_str(&d.used_bytes.to_string());}
+            out.push(',');
+            if let Some(d)=disk{out.push_str(&d.free_bytes.to_string());}
+            out.push(',');
+            if let Some(d)=disk{out.push_str(&d.total_bytes.to_string());}
+            out.push(',');
+            if let Some(d)=disk{out.push_str(&format!("{:.2}",d.read_bytes_per_second));}
+            out.push(',');
+            if let Some(d)=disk{out.push_str(&format!("{:.2}",d.write_bytes_per_second));}
         }
         out.push('\n');
     }
@@ -1377,6 +1407,15 @@ mod tests{
     #[test] fn disk_alert_metric_matches_surface_item_id(){
         assert_eq!(disk_metric_id("c:"),"disk-c:-usage");
         assert_eq!(format!("system-monitor-{}",disk_metric_id("c:")),"system-monitor-disk-c:-usage");
+    }
+    #[test] fn disk_rate_conversion_is_stable(){
+        assert_eq!(disk_rate_bytes_per_second(0,2000),0.0);
+        assert_eq!(disk_rate_bytes_per_second(2048,2000),1024.0);
+        assert_eq!(disk_rate_bytes_per_second(2048,0),0.0);
+    }
+    #[test] fn csv_disk_key_is_header_safe(){
+        assert_eq!(csv_disk_key("c:"),"c");
+        assert_eq!(csv_disk_key("Portable SSD"),"portable_ssd");
     }
     #[test] fn disk_identity_is_stable_for_equivalent_windows_mount_paths(){
         assert_eq!(stable_disk_id("C:\\", "System"), "c:");
