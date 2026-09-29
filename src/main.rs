@@ -189,7 +189,7 @@ fn disk_config(label:&str)->DiskConfig{
     let mut usage=metric_config(80.0,95.0);
     usage.overview_visualization=Some("bar".into());
     usage.topbar_visualization=Some("bar".into());
-    usage.topbar_title=Some(format!("{} Disk",label.trim_end_matches(['\\','/'])));
+    usage.topbar_title=Some(format!("{} Disk",label.trim_end_matches(|ch| ch=='\\' || ch=='/')));
     usage.show_topbar=false;
     DiskConfig{usage}
 }
@@ -693,7 +693,7 @@ impl Store {
         let mem=health(Some(sample.memory_percent),&self.config.memory);
         if let Some((from,to))=self.memory_tracker.observe(mem){ out.push(AlertTransition::new("memory","Memory utilization",Some(sample.memory_percent),from,to,self.config.memory.clone())); }
         for disk in &sample.disks {
-            let label=disk.mount_point.trim_end_matches(['\\','/']);
+            let label=disk.mount_point.trim_end_matches(|ch| ch=='\\' || ch=='/');
             let cfg=self.config.disks.entry(disk.id.clone()).or_insert_with(||disk_config(label)).clone();
             let h=health(Some(disk.usage_percent),&cfg.usage);
             let tracker=self.disk_trackers.entry(disk.id.clone()).or_default();
@@ -950,7 +950,7 @@ fn surfaces(store:&Store)->(Value,Value){
     if let Some(sample)=latest {
         for disk in &sample.disks {
             let Some(cfg)=store.config.disks.get(&disk.id) else {continue};
-            let label=disk.mount_point.trim_end_matches(['\\','/']);
+            let label=disk.mount_point.trim_end_matches(|ch| ch=='\\' || ch=='/');
             let title=format!("{} Disk",if label.is_empty(){&disk.name}else{label});
             let value=Some(disk.usage_percent);
             let h=health(value,&cfg.usage);
@@ -1369,6 +1369,28 @@ mod tests{
     }
     #[test] fn disk_identity_falls_back_to_name_without_mount_point(){
         assert_eq!(stable_disk_id("", "Portable SSD"), "portable ssd");
+    }
+    #[test] fn disk_usage_defaults_are_capacity_oriented_and_hidden_from_topbar(){
+        let d=disk_config("C:");
+        assert_eq!(d.usage.healthy_max,80.0);
+        assert_eq!(d.usage.critical_min,95.0);
+        assert!(!d.usage.show_topbar);
+        assert_eq!(d.usage.overview_visualization.as_deref(),Some("bar"));
+        assert_eq!(d.usage.topbar_visualization.as_deref(),Some("bar"));
+    }
+    #[test] fn config_rejects_invalid_disk_usage_thresholds(){
+        let mut c=Config::default();
+        let mut d=disk_config("C:");
+        d.usage.healthy_max=95.0;
+        d.usage.critical_min=90.0;
+        c.disks.insert("c:".into(),d);
+        assert!(normalize_config(c).is_err());
+    }
+    #[test] fn ui_exposes_per_disk_usage_settings(){
+        let ui=include_str!("../ui/index.html");
+        assert!(ui.contains("disks.+disk.id+"));
+        assert!(ui.contains("disk usage"));
+        assert!(ui.contains("kind===\"usage\""));
     }
     #[test] fn thresholds_are_three_state(){let c=metric_config(60.0,90.0);assert_eq!(health(Some(60.0),&c),Health::Healthy);assert_eq!(health(Some(70.0),&c),Health::Warning);assert_eq!(health(Some(90.0),&c),Health::Critical);}
     #[test] fn unavailable_is_not_zero(){let c=metric_config(60.0,90.0);assert_eq!(health(None,&c),Health::Unavailable);}
