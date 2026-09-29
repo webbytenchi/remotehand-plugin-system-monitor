@@ -314,6 +314,7 @@ struct DiskTelemetry {
 }
 
 fn disk_metric_id(disk_id:&str)->String{format!("disk-{disk_id}-usage")}
+fn gpu_metric_id(index:u32,kind:&str)->String{format!("gpu{index}-{kind}")}
 
 fn stable_disk_id(mount_point: &str, name: &str) -> String {
     let normalized = mount_point
@@ -735,7 +736,7 @@ impl Store {
                 let key=format!("{}:{kind}",gpu.luid);
                 let tracker=self.gpu_trackers.entry(key.clone()).or_default();
                 if let Some((from,to))=tracker.observe(h){
-                    out.push(AlertTransition::new(format!("gpu:{key}"),title,value,from,to,metric_cfg));
+                    out.push(AlertTransition::new(gpu_metric_id(gpu.index,kind),title,value,from,to,metric_cfg));
                 }
             }
         }
@@ -980,7 +981,7 @@ fn surfaces(store:&Store)->(Value,Value){
         if gpu.temperature_c.is_some(){metrics.push(("temperature","°C",gpu.temperature_c,&cfg.temperature,"graph"));}
         for (kind,unit,value,metric_cfg,default_visual) in metrics {
             let h=health(value,metric_cfg);
-            let id=format!("gpu{}-{}",gpu.index,kind);
+            let id=gpu_metric_id(gpu.index,kind);
             let default_title=match kind{
                 "utilization"=>format!("GPU {}",gpu.index),
                 "dedicatedMemory"=>format!("GPU {} VRAM",gpu.index),
@@ -1366,6 +1367,13 @@ fn main()->Result<(),String>{
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test] fn core_and_gpu_alert_metrics_match_surface_item_ids(){
+        assert_eq!(format!("system-monitor-{}","cpu"),"system-monitor-cpu");
+        assert_eq!(format!("system-monitor-{}","memory"),"system-monitor-memory");
+        assert_eq!(gpu_metric_id(0,"utilization"),"gpu0-utilization");
+        assert_eq!(gpu_metric_id(1,"dedicatedMemory"),"gpu1-dedicatedMemory");
+        assert_eq!(format!("system-monitor-{}",gpu_metric_id(0,"utilization")),"system-monitor-gpu0-utilization");
+    }
     #[test] fn disk_alert_metric_matches_surface_item_id(){
         assert_eq!(disk_metric_id("c:"),"disk-c:-usage");
         assert_eq!(format!("system-monitor-{}",disk_metric_id("c:")),"system-monitor-disk-c:-usage");
