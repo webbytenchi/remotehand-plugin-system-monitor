@@ -1440,6 +1440,15 @@ mod tests{
         c.disks.insert("c:".into(),d);
         assert!(normalize_config(c).is_err());
     }
+    #[test] fn disk_overview_uses_usage_donut_with_capacity(){
+        let ui=include_str!("../ui/index.html");
+        assert!(ui.contains("function diskUsageDonut("));
+        assert!(ui.contains("conic-gradient("));
+        assert!(ui.contains("capacity"));
+        assert!(ui.contains("used"));
+        assert!(ui.contains("free"));
+        assert!(!ui.contains("addMetric(\"Capacity\""));
+    }
     #[test] fn disk_overview_graphs_read_and_write_throughput(){
         let ui=include_str!("../ui/index.html");
         assert!(ui.contains("function drawThroughput("));
