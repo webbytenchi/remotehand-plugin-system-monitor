@@ -1388,7 +1388,7 @@ mod tests{
     }
     #[test] fn ui_exposes_per_disk_usage_settings(){
         let ui=include_str!("../ui/index.html");
-        assert!(ui.contains("metricBox(\\\"disks.\\\"+disk.id+\\\".usage\\\""));
+        assert!(ui.contains(r#"metricBox("disks."+disk.id+".usage""#));
         assert!(ui.contains("disk usage"));
         assert!(ui.contains("kind===\"usage\""));
     }
