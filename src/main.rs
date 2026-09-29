@@ -780,6 +780,13 @@ fn visible_gpu_luids(adapters:&[GpuAdapterInfo],latest:&[GpuTelemetry])->HashSet
     visible
 }
 
+fn topbar_alert_color<'a>(h:Health,cfg:&'a MetricConfig)->Option<&'a str>{
+    match h{
+        Health::Warning=>Some(&cfg.warning_color),
+        Health::Critical=>Some(&cfg.critical_color),
+        _=>None,
+    }
+}
 fn metric_topbar(id:&str,default_title:&str,value:Option<f64>,unit:&str,progress_percent:Option<f64>,series:Vec<Value>,h:Health,cfg:&MetricConfig,default_visualization:&str)->Value{
     let shown=value.map(|v|format!("{:.0}{unit}",v)).unwrap_or_else(||"—".into());
     let title=cfg.topbar_title.as_deref().filter(|v|!v.trim().is_empty()).unwrap_or(default_title);
@@ -789,6 +796,7 @@ fn metric_topbar(id:&str,default_title:&str,value:Option<f64>,unit:&str,progress
     let value_alert=cfg.topbar_value_alert_color.as_deref().unwrap_or("#efaaaa");
     let value_color=if matches!(h,Health::Warning|Health::Critical){value_alert}else{value_normal};
     let title_color=cfg.topbar_title_color.as_deref().unwrap_or("#a8b4c2");
+    let alert_color=topbar_alert_color(h,cfg);
     let visual=if visualization=="bar"{
         json!({"type":"progress","label":"","value":progress_percent.unwrap_or(0.0),"color":state_color})
     }else{
@@ -797,8 +805,10 @@ fn metric_topbar(id:&str,default_title:&str,value:Option<f64>,unit:&str,progress
     json!({
         "id":format!("system-monitor:{id}"),"title":title,
         "tooltip":format!("{title}: {shown} · {}",health_name(h)),
+        "icon":alert_color.map(|_|"alert"),
         "content":{
             "type":"stack",
+            "color":alert_color,
             "backgroundColor":cfg.topbar_background_color,
             "borderColor":cfg.topbar_border_color,
             "children":[
@@ -1384,6 +1394,24 @@ mod tests{
         assert!(!top.contains("gpu1-utilization"));
         assert!(tray.contains("gpu0-utilization"));
         assert!(!tray.contains("gpu1-utilization"));
+    }
+
+    #[test] fn topbar_live_alert_icon_uses_metric_warning_and_critical_colors(){
+        let mut cfg=metric_config(60.0,90.0);
+        cfg.warning_color="#123456".into();
+        cfg.critical_color="#abcdef".into();
+
+        let warning=metric_topbar("cpu","CPU",Some(75.0),"%",Some(75.0),vec![],Health::Warning,&cfg,"graph");
+        assert_eq!(warning["icon"],json!("alert"));
+        assert_eq!(warning["content"]["color"],json!("#123456"));
+
+        let critical=metric_topbar("cpu","CPU",Some(95.0),"%",Some(95.0),vec![],Health::Critical,&cfg,"graph");
+        assert_eq!(critical["icon"],json!("alert"));
+        assert_eq!(critical["content"]["color"],json!("#abcdef"));
+
+        let healthy=metric_topbar("cpu","CPU",Some(40.0),"%",Some(40.0),vec![],Health::Healthy,&cfg,"graph");
+        assert!(healthy["icon"].is_null());
+        assert!(healthy["content"]["color"].is_null());
     }
 
     #[test] fn topbar_series_colors_each_sample_by_its_own_threshold_state(){
