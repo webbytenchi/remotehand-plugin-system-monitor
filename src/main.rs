@@ -313,6 +313,8 @@ struct DiskTelemetry {
     write_bytes_per_second: f64,
 }
 
+fn disk_metric_id(disk_id:&str)->String{format!("disk-{disk_id}-usage")}
+
 fn stable_disk_id(mount_point: &str, name: &str) -> String {
     let normalized = mount_point
         .replace('\\', "/")
@@ -699,7 +701,7 @@ impl Store {
             let tracker=self.disk_trackers.entry(disk.id.clone()).or_default();
             if let Some((from,to))=tracker.observe(h){
                 out.push(AlertTransition::new(
-                    format!("disk:{}:usage",disk.id),
+                    disk_metric_id(&disk.id),
                     format!("{} disk usage",if label.is_empty(){&disk.name}else{label}),
                     Some(disk.usage_percent),
                     from,
@@ -954,7 +956,7 @@ fn surfaces(store:&Store)->(Value,Value){
             let title=format!("{} Disk",if label.is_empty(){&disk.name}else{label});
             let value=Some(disk.usage_percent);
             let h=health(value,&cfg.usage);
-            let id=format!("disk-{}-usage",disk.id);
+            let id=disk_metric_id(&disk.id);
             if cfg.usage.show_topbar {
                 top.push(metric_topbar(
                     &id,&title,value,"%",value,
@@ -1363,6 +1365,10 @@ fn main()->Result<(),String>{
 #[cfg(test)]
 mod tests{
     use super::*;
+    #[test] fn disk_alert_metric_matches_surface_item_id(){
+        assert_eq!(disk_metric_id("c:"),"disk-c:-usage");
+        assert_eq!(format!("system-monitor-{}",disk_metric_id("c:")),"system-monitor-disk-c:-usage");
+    }
     #[test] fn disk_identity_is_stable_for_equivalent_windows_mount_paths(){
         assert_eq!(stable_disk_id("C:\\", "System"), "c:");
         assert_eq!(stable_disk_id("c:/", "Renamed"), "c:");
