@@ -1,10 +1,10 @@
 {
   "id": "remotehand.system-monitor",
   "name": "RemoteHand System Monitor",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "apiVersion": 1,
   "author": "RemoteHand",
-  "description": "Local CPU, memory, GPU, and process monitoring for RemoteHand.",
+  "description": "Local CPU, memory, GPU, disk, and process monitoring for RemoteHand.",
   "runtime": {
     "kind": "executable",
     "entrypoints": {
