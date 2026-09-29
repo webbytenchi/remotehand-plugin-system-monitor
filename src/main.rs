@@ -182,6 +182,20 @@ fn metric_config(healthy_max: f64, critical_min: f64) -> MetricConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct DiskConfig {
+    usage: MetricConfig,
+}
+fn disk_config(label:&str)->DiskConfig{
+    let mut usage=metric_config(80.0,95.0);
+    usage.overview_visualization=Some("bar".into());
+    usage.topbar_visualization=Some("bar".into());
+    usage.topbar_title=Some(format!("{} Disk",label.trim_end_matches(['\\','/'])));
+    usage.show_topbar=false;
+    DiskConfig{usage}
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct GpuConfig {
     utilization: MetricConfig,
     dedicated_memory: MetricConfig,
@@ -225,6 +239,8 @@ struct Config {
     memory: MetricConfig,
     #[serde(default)]
     gpus: BTreeMap<String,GpuConfig>,
+    #[serde(default)]
+    disks: BTreeMap<String,DiskConfig>,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -247,6 +263,7 @@ impl Default for Config {
                 m
             },
             gpus:BTreeMap::new(),
+            disks:BTreeMap::new(),
         }
     }
 }
@@ -256,6 +273,12 @@ fn normalize_config(mut c: Config) -> Result<Config, String> {
     for (name, m) in [("CPU",&c.cpu),("Temperature",&c.temperature),("Memory",&c.memory)] {
         if !m.healthy_max.is_finite() || !m.critical_min.is_finite() || m.healthy_max >= m.critical_min {
             return Err(format!("{name} thresholds must be finite and healthy < critical"));
+        }
+    }
+    for (id,disk) in &c.disks {
+        let m=&disk.usage;
+        if !m.healthy_max.is_finite() || !m.critical_min.is_finite() || m.healthy_max >= m.critical_min {
+            return Err(format!("Disk {id} usage thresholds must be finite and healthy < critical"));
         }
     }
     for (luid,gpu) in &c.gpus {
