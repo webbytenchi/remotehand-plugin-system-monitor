@@ -659,6 +659,7 @@ struct Store {
     temp_tracker: TransitionTracker,
     memory_tracker: TransitionTracker,
     gpu_trackers: BTreeMap<String,TransitionTracker>,
+    disk_trackers: BTreeMap<String,TransitionTracker>,
 }
 impl Store {
     fn new() -> Self {
@@ -677,6 +678,7 @@ impl Store {
             temp_tracker: Default::default(),
             memory_tracker: Default::default(),
             gpu_trackers: BTreeMap::new(),
+            disk_trackers: BTreeMap::new(),
         }
     }
     fn record(&mut self, sample: Sample) -> Vec<AlertTransition> {
@@ -690,6 +692,22 @@ impl Store {
         if let Some((from,to))=self.temp_tracker.observe(temp){ out.push(AlertTransition::new("temperature","CPU temperature",sample.temperature_c,from,to,self.config.temperature.clone())); }
         let mem=health(Some(sample.memory_percent),&self.config.memory);
         if let Some((from,to))=self.memory_tracker.observe(mem){ out.push(AlertTransition::new("memory","Memory utilization",Some(sample.memory_percent),from,to,self.config.memory.clone())); }
+        for disk in &sample.disks {
+            let label=disk.mount_point.trim_end_matches(['\\','/']);
+            let cfg=self.config.disks.entry(disk.id.clone()).or_insert_with(||disk_config(label)).clone();
+            let h=health(Some(disk.usage_percent),&cfg.usage);
+            let tracker=self.disk_trackers.entry(disk.id.clone()).or_default();
+            if let Some((from,to))=tracker.observe(h){
+                out.push(AlertTransition::new(
+                    format!("disk:{}:usage",disk.id),
+                    format!("{} disk usage",if label.is_empty(){&disk.name}else{label}),
+                    Some(disk.usage_percent),
+                    from,
+                    to,
+                    cfg.usage,
+                ));
+            }
+        }
         out
     }
 
@@ -809,6 +827,14 @@ fn gpu_value(gpu:&GpuTelemetry,kind:&str)->Option<f64>{
         _=>None,
     }
 }
+fn recent_disk_series(history:&VecDeque<Sample>,disk_id:&str,limit:usize,cfg:&MetricConfig)->Vec<Value>{
+    history.iter().rev().take(limit).collect::<Vec<_>>().into_iter().rev().filter_map(|s|{
+        s.disks.iter().find(|d|d.id==disk_id).map(|d|{
+            let h=health(Some(d.usage_percent),cfg);
+            json!({"value":d.usage_percent,"color":health_color(h,cfg)})
+        })
+    }).collect()
+}
 fn recent_gpu_series(history:&VecDeque<GpuSnapshot>,luid:&str,kind:&str,seconds:u64,cfg:&MetricConfig)->Vec<Value>{
     let cutoff=now_ms().saturating_sub(seconds*1000);
     history.iter().filter(|s|s.timestamp>=cutoff).filter_map(|s|{
@@ -920,6 +946,25 @@ fn surfaces(store:&Store)->(Value,Value){
     ];
     if store.config.cpu.show_topbar{top.push(metric_topbar("cpu","CPU",cpu_value,"%",cpu_value,recent_series(&store.history,|s|Some(s.cpu_percent),60,&store.config.cpu),cpu_h,&store.config.cpu,"graph"));}
     if store.config.memory.show_topbar{top.push(metric_topbar("memory","Memory",mem_value,"%",mem_value,recent_series(&store.history,|s|Some(s.memory_percent),60,&store.config.memory),mem_h,&store.config.memory,"bar"));}
+
+    if let Some(sample)=latest {
+        for disk in &sample.disks {
+            let Some(cfg)=store.config.disks.get(&disk.id) else {continue};
+            let label=disk.mount_point.trim_end_matches(['\\','/']);
+            let title=format!("{} Disk",if label.is_empty(){&disk.name}else{label});
+            let value=Some(disk.usage_percent);
+            let h=health(value,&cfg.usage);
+            let id=format!("disk-{}-usage",disk.id);
+            if cfg.usage.show_topbar {
+                top.push(metric_topbar(
+                    &id,&title,value,"%",value,
+                    recent_disk_series(&store.history,&disk.id,60,&cfg.usage),
+                    h,&cfg.usage,"bar"
+                ));
+            }
+            tray.push(tray_item(&id,&title,value,"%",h,&cfg.usage));
+        }
+    }
 
     let visible_gpu_luids=visible_gpu_luids(&store.gpu_adapters,&store.gpu_latest);
     for gpu in &store.gpu_latest {
