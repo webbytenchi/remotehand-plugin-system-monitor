@@ -1342,16 +1342,17 @@ fn main()->Result<(),String>{
             }
             "system.alert.test"=>{
                 let metric=request.params.get("metric").and_then(Value::as_str).unwrap_or("cpu");
+                let item_id=request.params.get("itemId").and_then(Value::as_str).unwrap_or(metric);
                 let state_name=request.params.get("state").and_then(Value::as_str).unwrap_or("warning");
                 let notification=request.params.get("notification").and_then(Value::as_bool).unwrap_or(false);
                 let tone=if state_name=="critical"{"danger"}else if state_name=="recovered"{"success"}else{"warning"};
                 if notification{
                     let _=send_outbound(&output_tx,PluginEvent{message_type:"plugin.event",event:"notification.show",payload:json!({
-                        "itemId":format!("system-monitor-{metric}"),"title":format!("System Monitor · {} test",if state_name=="recovered"{"Recovered"}else if state_name=="critical"{"Critical"}else{"Warning"}),"body":format!("{metric} alert test"),"tone":tone,"silent":true,
+                        "itemId":format!("system-monitor-{item_id}"),"title":format!("System Monitor · {} test",if state_name=="recovered"{"Recovered"}else if state_name=="critical"{"Critical"}else{"Warning"}),"body":format!("{metric} alert test"),"tone":tone,"silent":true,
                         "action":{"type":"open-panel","panel":"system-monitor","context":{"metric":metric}}
                     })});
                 }
-                PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"tested":metric,"state":state_name}),error:String::new()}
+                PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"tested":metric,"itemId":item_id,"state":state_name}),error:String::new()}
             }
             _=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error:format!("unknown method: {}",request.method)}
         };
