@@ -949,7 +949,7 @@ fn alert_history_query(events:&[AlertHistoryEvent],params:&Value)->Value{
     let page=params.get("page").and_then(Value::as_u64).unwrap_or(1).max(1) as usize;
     let start=(page-1).saturating_mul(page_size).min(total);
     let end=(start+page_size).min(total);
-    json!({"rows":rows[start..end],"total":total,"page":page,"pageSize":page_size,"facets":{"metrics":metrics.into_iter().map(|(id,name)|json!({"id":id,"name":name})).collect::<Vec<_>>(),"statuses":statuses}})
+    json!({"rows":rows[start..end].to_vec(),"total":total,"page":page,"pageSize":page_size,"facets":{"metrics":metrics.into_iter().map(|(id,name)|json!({"id":id,"name":name})).collect::<Vec<_>>(),"statuses":statuses}})
 }
 
 fn recent_series(history:&VecDeque<Sample>,selector:fn(&Sample)->Option<f64>,seconds:u64,cfg:&MetricConfig)->Vec<Value>{
