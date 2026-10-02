@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::Path;
 use std::io::{self, Read, Write};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{atomic::{AtomicBool, Ordering}, mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use sysinfo::{Disks, Pid, ProcessesToUpdate, System, Users};
@@ -17,7 +17,9 @@ use gpu_windows::{GpuAdapterInfo, GpuSampler, GpuTelemetry};
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const STORAGE_KEY: &str = "config-v1";
 const PROCESS_UI_STORAGE_KEY: &str = "process-ui-v1";
+const ALERT_HISTORY_STORAGE_KEY: &str = "alert-history-v1";
 const MAX_HISTORY_SECONDS: u64 = 60 * 60;
+const MAX_ALERT_HISTORY_EVENTS: usize = 10_000;
 const DEFAULT_SAMPLE_SECONDS: u64 = 2;
 
 fn now_ms() -> u64 {
@@ -234,6 +236,8 @@ fn gpu_config(_index:u32,name:&str)->GpuConfig{
 struct Config {
     sample_seconds: u64,
     default_window_minutes: u64,
+    #[serde(default = "default_true")]
+    alert_history_enabled: bool,
     cpu: MetricConfig,
     temperature: MetricConfig,
     memory: MetricConfig,
@@ -247,6 +251,7 @@ impl Default for Config {
         Self {
             sample_seconds: DEFAULT_SAMPLE_SECONDS,
             default_window_minutes: 15,
+            alert_history_enabled: true,
             cpu: {
                 let mut m=metric_config(70.0,95.0);
                 m.overview_visualization=Some("graph".into());
@@ -655,10 +660,58 @@ fn process_list_value(rows: &[ProcessSnapshot], params: &Value, updated_at: u64)
 }
 
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AlertHistoryEvent {
+    id: String,
+    timestamp: u64,
+    metric: String,
+    title: String,
+    status: String,
+    value: String,
+    threshold: String,
+    sound: bool,
+    notification: bool,
+    details: String,
+}
+#[derive(Debug, Clone)]
+struct AlertHistoryState {
+    events: Arc<Mutex<Vec<AlertHistoryEvent>>>,
+    dirty: Arc<AtomicBool>,
+}
+impl Default for AlertHistoryState {
+    fn default() -> Self {
+        Self { events: Arc::new(Mutex::new(Vec::new())), dirty: Arc::new(AtomicBool::new(false)) }
+    }
+}
+impl AlertHistoryState {
+    fn record(&self,event:AlertHistoryEvent){
+        if let Ok(mut events)=self.events.lock(){
+            events.push(event);
+            if events.len()>MAX_ALERT_HISTORY_EVENTS {
+                let remove=events.len()-MAX_ALERT_HISTORY_EVENTS;
+                events.drain(0..remove);
+            }
+            self.dirty.store(true,Ordering::Release);
+        }
+    }
+    fn snapshot(&self)->Vec<AlertHistoryEvent>{self.events.lock().map(|events|events.clone()).unwrap_or_default()}
+    fn replace(&self,mut events:Vec<AlertHistoryEvent>){
+        if events.len()>MAX_ALERT_HISTORY_EVENTS{events.drain(0..events.len()-MAX_ALERT_HISTORY_EVENTS);}
+        if let Ok(mut current)=self.events.lock(){*current=events;}
+        self.dirty.store(false,Ordering::Release);
+    }
+    fn clear(&self){
+        if let Ok(mut events)=self.events.lock(){events.clear();}
+        self.dirty.store(true,Ordering::Release);
+    }
+}
+
 struct Store {
     config: Config,
     history: VecDeque<Sample>,
     gpu_history: VecDeque<GpuSnapshot>,
+    alert_history: AlertHistoryState,
     gpu_latest: Vec<GpuTelemetry>,
     gpu_adapters: Vec<GpuAdapterInfo>,
     gpu_discovery_state: String,
@@ -678,6 +731,7 @@ impl Store {
             config: Config::default(),
             history: VecDeque::new(),
             gpu_history: VecDeque::new(),
+            alert_history: AlertHistoryState::default(),
             gpu_latest: Vec::new(),
             gpu_adapters: Vec::new(),
             gpu_discovery_state: "pending".into(),
@@ -719,6 +773,7 @@ impl Store {
                 ));
             }
         }
+        self.record_alert_transitions(&out);
         out
     }
 
@@ -748,7 +803,14 @@ impl Store {
                 }
             }
         }
+        self.record_alert_transitions(&out);
         out
+    }
+    fn record_alert_transitions(&self,transitions:&[AlertTransition]){
+        if !self.config.alert_history_enabled{return;}
+        for transition in transitions.iter().filter(|transition|transition.actionable()){
+            self.alert_history.record(alert_history_event(transition));
+        }
     }
 }
 
@@ -766,6 +828,30 @@ impl AlertTransition {
     fn actionable(&self)->bool{
         matches!(self.to,Health::Warning|Health::Critical)
             || (self.to==Health::Healthy && matches!(self.from,Health::Warning|Health::Critical))
+    }
+}
+fn alert_history_event(transition:&AlertTransition)->AlertHistoryEvent{
+    let status=match transition.to{Health::Warning=>"Warning",Health::Critical=>"Critical",Health::Healthy=>"Recovered",Health::Unavailable=>"Unavailable"};
+    let threshold=match transition.to{
+        Health::Warning=>format!("> {:.1}",transition.config.healthy_max),
+        Health::Critical=>format!("≥ {:.1}",transition.config.critical_min),
+        Health::Healthy=>format!("≤ {:.1}",transition.config.healthy_max),
+        Health::Unavailable=>String::new(),
+    };
+    let unit=if transition.title.to_ascii_lowercase().contains("temperature"){"°C"}else{"%"};
+    let value=transition.value.map(|v|format!("{v:.1}{unit}")).unwrap_or_else(||"—".into());
+    let delivery=alert_delivery_for(&transition.config,transition.to);
+    AlertHistoryEvent{
+        id:format!("alert-{}-{}",now_ms(),std::process::id()),
+        timestamp:now_ms(),
+        metric:transition.metric.clone(),
+        title:transition.title.clone(),
+        status:status.into(),
+        value,
+        threshold,
+        sound:delivery.sound,
+        notification:delivery.notification,
+        details:if status=="Recovered"{format!("Recovered from {}",health_name(transition.from))}else{format!("State changed from {} to {}",health_name(transition.from),health_name(transition.to))},
     }
 }
 
@@ -818,6 +904,52 @@ fn load_config(input:&mut impl Read,output:&mpsc::Sender<Value>,request_id:&mut 
 }
 fn save_config(input:&mut impl Read,output:&mpsc::Sender<Value>,request_id:&mut u64,config:&Config)->Result<(),String>{
     host_request(input,output,request_id,"storage.set",json!({"key":STORAGE_KEY,"value":config}))?;Ok(())
+}
+fn load_alert_history(input:&mut impl Read,output:&mpsc::Sender<Value>,request_id:&mut u64)->Result<Vec<AlertHistoryEvent>,String>{
+    let result=host_request(input,output,request_id,"storage.get",json!({"key":ALERT_HISTORY_STORAGE_KEY}))?;
+    match result.get("value"){None|Some(Value::Null)=>Ok(Vec::new()),Some(value)=>serde_json::from_value(value.clone()).map_err(|e|format!("invalid stored System Monitor alert history: {e}"))}
+}
+fn save_alert_history(input:&mut impl Read,output:&mpsc::Sender<Value>,request_id:&mut u64,history:&AlertHistoryState)->Result<(),String>{
+    if !history.dirty.load(Ordering::Acquire){return Ok(());}
+    let events=history.snapshot();
+    host_request(input,output,request_id,"storage.set",json!({"key":ALERT_HISTORY_STORAGE_KEY,"value":events}))?;
+    history.dirty.store(false,Ordering::Release);
+    Ok(())
+}
+fn alert_history_text(event:&AlertHistoryEvent)->String{
+    format!("{} {} {} {} {} {}",event.metric,event.title,event.status,event.value,event.threshold,event.details).to_ascii_lowercase()
+}
+fn alert_history_query(events:&[AlertHistoryEvent],params:&Value)->Value{
+    let search=params.get("search").and_then(Value::as_str).unwrap_or("").trim().to_ascii_lowercase();
+    let metric=params.get("metric").and_then(Value::as_str).unwrap_or("");
+    let status=params.get("status").and_then(Value::as_str).unwrap_or("");
+    let from=params.get("from").and_then(Value::as_u64).unwrap_or(0);
+    let to=params.get("to").and_then(Value::as_u64).unwrap_or(u64::MAX);
+    let mut rows=events.iter().filter(|event|{
+        (search.is_empty()||alert_history_text(event).contains(&search))
+        &&(metric.is_empty()||event.metric==metric)
+        &&(status.is_empty()||event.status==status)
+        &&event.timestamp>=from&&event.timestamp<=to
+    }).cloned().collect::<Vec<_>>();
+    let sort_by=params.get("sortBy").and_then(Value::as_str).unwrap_or("timestamp");
+    let descending=params.get("sortDir").and_then(Value::as_str).unwrap_or("desc")!="asc";
+    rows.sort_by(|a,b|{
+        let order=match sort_by{
+            "metric"=>a.title.cmp(&b.title),
+            "status"=>a.status.cmp(&b.status),
+            _=>a.timestamp.cmp(&b.timestamp),
+        };
+        if descending{order.reverse()}else{order}
+    });
+    let mut metrics=events.iter().map(|event|(event.metric.clone(),event.title.clone())).collect::<Vec<_>>();
+    metrics.sort_by(|a,b|a.1.cmp(&b.1));metrics.dedup_by(|a,b|a.0==b.0);
+    let mut statuses=events.iter().map(|event|event.status.clone()).collect::<Vec<_>>();statuses.sort();statuses.dedup();
+    let total=rows.len();
+    let page_size=params.get("pageSize").and_then(Value::as_u64).unwrap_or(25).clamp(1,100) as usize;
+    let page=params.get("page").and_then(Value::as_u64).unwrap_or(1).max(1) as usize;
+    let start=(page-1).saturating_mul(page_size).min(total);
+    let end=(start+page_size).min(total);
+    json!({"rows":rows[start..end],"total":total,"page":page,"pageSize":page_size,"facets":{"metrics":metrics.into_iter().map(|(id,name)|json!({"id":id,"name":name})).collect::<Vec<_>>(),"statuses":statuses}})
 }
 
 fn recent_series(history:&VecDeque<Sample>,selector:fn(&Sample)->Option<f64>,seconds:u64,cfg:&MetricConfig)->Vec<Value>{
@@ -1119,8 +1251,13 @@ fn main()->Result<(),String>{
     let _writer=thread::spawn(move||{let stdout=io::stdout();let mut output=stdout.lock();while let Ok(value)=output_rx.recv(){write_frame_raw(&mut output,&value)?;}Ok::<(),String>(())});
     let mut host_request_id=1u64;
     let config=load_config(&mut input,&output_tx,&mut host_request_id).unwrap_or_default();
+    let stored_alert_history=load_alert_history(&mut input,&output_tx,&mut host_request_id).unwrap_or_default();
     let store=Arc::new(Mutex::new(Store::new()));
-    store.lock().map_err(|_|"state lock poisoned".to_string())?.config=config;
+    {
+        let mut guard=store.lock().map_err(|_|"state lock poisoned".to_string())?;
+        guard.config=config;
+        guard.alert_history.replace(stored_alert_history);
+    }
 
     // GPU discovery/telemetry stays entirely off the startup/handshake path.
     {
@@ -1241,8 +1378,24 @@ fn main()->Result<(),String>{
         let request:HostRequest=match serde_json::from_slice(&payload){Ok(v)=>v,Err(_)=>continue};
         let response=match request.method.as_str(){
             "system.status"=>{
+                let history=store.lock().map_err(|_|"state lock poisoned".to_string())?.alert_history.clone();
+                let _=save_alert_history(&mut input,&output_tx,&mut host_request_id,&history);
                 let guard=store.lock().map_err(|_|"state lock poisoned".to_string())?;
                 PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:status_value(&guard),error:String::new()}
+            }
+            "system.history.query"=>{
+                let history=store.lock().map_err(|_|"state lock poisoned".to_string())?.alert_history.clone();
+                let _=save_alert_history(&mut input,&output_tx,&mut host_request_id,&history);
+                let rows=history.snapshot();
+                PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:alert_history_query(&rows,&request.params),error:String::new()}
+            }
+            "system.history.clear"=>{
+                let history=store.lock().map_err(|_|"state lock poisoned".to_string())?.alert_history.clone();
+                history.clear();
+                match save_alert_history(&mut input,&output_tx,&mut host_request_id,&history){
+                    Ok(())=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:json!({"cleared":true}),error:String::new()},
+                    Err(error)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error}
+                }
             }
             "system.processes.list"=>{
                 let guard=store.lock().map_err(|_|"state lock poisoned".to_string())?;
@@ -1477,6 +1630,28 @@ mod tests{
     #[test] fn unavailable_is_not_zero(){let c=metric_config(60.0,90.0);assert_eq!(health(None,&c),Health::Unavailable);}
     #[test] fn transitions_require_two_samples(){let mut t=TransitionTracker::default();assert!(t.observe(Health::Healthy).is_none());assert_eq!(t.observe(Health::Healthy),Some((Health::Unavailable,Health::Healthy)));assert!(t.observe(Health::Critical).is_none());assert_eq!(t.observe(Health::Critical),Some((Health::Healthy,Health::Critical)));}
     #[test] fn config_rejects_overlapping_thresholds(){let mut c=Config::default();c.temperature.healthy_max=95.0;c.temperature.critical_min=90.0;assert!(normalize_config(c).is_err());}
+    #[test] fn alert_history_records_only_actionable_transitions_and_respects_disable(){
+        let mut store=Store::new();
+        let cfg=metric_config(70.0,95.0);
+        store.record_alert_transitions(&[
+            AlertTransition::new("cpu","CPU utilization",Some(80.0),Health::Healthy,Health::Warning,cfg.clone()),
+            AlertTransition::new("cpu","CPU utilization",Some(60.0),Health::Unavailable,Health::Healthy,cfg.clone()),
+        ]);
+        assert_eq!(store.alert_history.snapshot().len(),1);
+        assert_eq!(store.alert_history.snapshot()[0].status,"Warning");
+        store.config.alert_history_enabled=false;
+        store.record_alert_transitions(&[AlertTransition::new("cpu","CPU utilization",Some(96.0),Health::Warning,Health::Critical,cfg)]);
+        assert_eq!(store.alert_history.snapshot().len(),1);
+    }
+    #[test] fn alert_history_clear_preserves_disabled_setting(){
+        let mut store=Store::new();
+        store.record_alert_transitions(&[AlertTransition::new("cpu","CPU utilization",Some(80.0),Health::Healthy,Health::Warning,metric_config(70.0,95.0))]);
+        assert_eq!(store.alert_history.snapshot().len(),1);
+        store.alert_history.clear();
+        assert!(store.alert_history.snapshot().is_empty());
+        assert!(store.config.alert_history_enabled);
+    }
+
     #[test] fn recovered_transition_is_actionable_but_initial_healthy_is_not(){let c=metric_config(70.0,95.0);assert!(!AlertTransition::new("cpu","CPU",Some(10.0),Health::Unavailable,Health::Healthy,c.clone()).actionable());assert!(AlertTransition::new("cpu","CPU",Some(10.0),Health::Warning,Health::Healthy,c).actionable());}
     #[test] fn default_recovered_alert_sounds_without_notification(){let c=metric_config(70.0,95.0);let d=alert_delivery_for(&c,Health::Healthy);assert!(d.sound);assert!(!d.notification);}
     #[test] fn ui_persists_alert_delivery_checkboxes_separately(){
