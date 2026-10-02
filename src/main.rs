@@ -956,7 +956,7 @@ fn alert_history_query(events:&[AlertHistoryEvent],params:&Value)->Value{
     json!({"rows":rows[start..end].to_vec(),"total":total,"page":page,"pageSize":page_size,"facets":{"metrics":metrics.into_iter().map(|(id,name)|json!({"id":id,"name":name})).collect::<Vec<_>>(),"statuses":statuses}})
 }
 fn csv_cell(value:&str)->String{
-    if value.contains([',','"','\r','\n']){format!("\"{}\"",value.replace('"',"\"\""))}else{value.to_string()}
+    if value.contains(',')||value.contains('"')||value.contains('\r')||value.contains('\n'){format!("\"{}\"",value.replace('"',"\"\""))}else{value.to_string()}
 }
 fn alert_history_csv(events:&[AlertHistoryEvent],params:&Value)->String{
     let rows=alert_history_rows(events,params);
