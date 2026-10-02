@@ -1644,7 +1644,7 @@ mod tests{
         assert_eq!(store.alert_history.snapshot().len(),1);
     }
     #[test] fn alert_history_clear_preserves_disabled_setting(){
-        let mut store=Store::new();
+        let store=Store::new();
         store.record_alert_transitions(&[AlertTransition::new("cpu","CPU utilization",Some(80.0),Health::Healthy,Health::Warning,metric_config(70.0,95.0))]);
         assert_eq!(store.alert_history.snapshot().len(),1);
         store.alert_history.clear();
