@@ -941,13 +941,13 @@ fn alert_history_rows(events:&[AlertHistoryEvent],params:&Value)->Vec<AlertHisto
         };
         if descending{order.reverse()}else{order}
     });
-    let mut metrics=events.iter().map(|event|(event.metric.clone(),event.title.clone())).collect::<Vec<_>>();
-    metrics.sort_by(|a,b|a.1.cmp(&b.1));metrics.dedup_by(|a,b|a.0==b.0);
-    let mut statuses=events.iter().map(|event|event.status.clone()).collect::<Vec<_>>();statuses.sort();statuses.dedup();
     rows
 }
 fn alert_history_query(events:&[AlertHistoryEvent],params:&Value)->Value{
     let rows=alert_history_rows(events,params);
+    let mut metrics=events.iter().map(|event|(event.metric.clone(),event.title.clone())).collect::<Vec<_>>();
+    metrics.sort_by(|a,b|a.1.cmp(&b.1));metrics.dedup_by(|a,b|a.0==b.0);
+    let mut statuses=events.iter().map(|event|event.status.clone()).collect::<Vec<_>>();statuses.sort();statuses.dedup();
     let total=rows.len();
     let page_size=params.get("pageSize").and_then(Value::as_u64).unwrap_or(25).clamp(1,100) as usize;
     let page=params.get("page").and_then(Value::as_u64).unwrap_or(1).max(1) as usize;
