@@ -919,7 +919,7 @@ fn save_alert_history(input:&mut impl Read,output:&mpsc::Sender<Value>,request_i
 fn alert_history_text(event:&AlertHistoryEvent)->String{
     format!("{} {} {} {} {} {}",event.metric,event.title,event.status,event.value,event.threshold,event.details).to_ascii_lowercase()
 }
-fn alert_history_query(events:&[AlertHistoryEvent],params:&Value)->Value{
+fn alert_history_rows(events:&[AlertHistoryEvent],params:&Value)->Vec<AlertHistoryEvent>{
     let search=params.get("search").and_then(Value::as_str).unwrap_or("").trim().to_ascii_lowercase();
     let metric=params.get("metric").and_then(Value::as_str).unwrap_or("");
     let status=params.get("status").and_then(Value::as_str).unwrap_or("");
@@ -944,12 +944,38 @@ fn alert_history_query(events:&[AlertHistoryEvent],params:&Value)->Value{
     let mut metrics=events.iter().map(|event|(event.metric.clone(),event.title.clone())).collect::<Vec<_>>();
     metrics.sort_by(|a,b|a.1.cmp(&b.1));metrics.dedup_by(|a,b|a.0==b.0);
     let mut statuses=events.iter().map(|event|event.status.clone()).collect::<Vec<_>>();statuses.sort();statuses.dedup();
+    rows
+}
+fn alert_history_query(events:&[AlertHistoryEvent],params:&Value)->Value{
+    let rows=alert_history_rows(events,params);
     let total=rows.len();
     let page_size=params.get("pageSize").and_then(Value::as_u64).unwrap_or(25).clamp(1,100) as usize;
     let page=params.get("page").and_then(Value::as_u64).unwrap_or(1).max(1) as usize;
     let start=(page-1).saturating_mul(page_size).min(total);
     let end=(start+page_size).min(total);
     json!({"rows":rows[start..end].to_vec(),"total":total,"page":page,"pageSize":page_size,"facets":{"metrics":metrics.into_iter().map(|(id,name)|json!({"id":id,"name":name})).collect::<Vec<_>>(),"statuses":statuses}})
+}
+fn csv_cell(value:&str)->String{
+    if value.contains([',','"','\r','\n']){format!("\"{}\"",value.replace('"',"\"\""))}else{value.to_string()}
+}
+fn alert_history_csv(events:&[AlertHistoryEvent],params:&Value)->String{
+    let rows=alert_history_rows(events,params);
+    let mut out=String::from("timestamp_ms,metric,event,value,threshold,sound,notification,details\n");
+    for event in rows{
+        let fields=[
+            event.timestamp.to_string(),
+            event.title,
+            event.status,
+            event.value,
+            event.threshold,
+            if event.sound{"Yes".into()}else{"No".into()},
+            if event.notification{"Yes".into()}else{"No".into()},
+            event.details,
+        ];
+        out.push_str(&fields.iter().map(|v|csv_cell(v)).collect::<Vec<_>>().join(","));
+        out.push('\n');
+    }
+    out
 }
 
 fn recent_series(history:&VecDeque<Sample>,selector:fn(&Sample)->Option<f64>,seconds:u64,cfg:&MetricConfig)->Vec<Value>{
@@ -1389,6 +1415,17 @@ fn main()->Result<(),String>{
                 let rows=history.snapshot();
                 PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result:alert_history_query(&rows,&request.params),error:String::new()}
             }
+            "system.history.export"=>{
+                let history=store.lock().map_err(|_|"state lock poisoned".to_string())?.alert_history.clone();
+                let _=save_alert_history(&mut input,&output_tx,&mut host_request_id,&history);
+                let rows=history.snapshot();
+                let csv=alert_history_csv(&rows,&request.params);
+                let suggested_name=request.params.get("suggestedName").and_then(Value::as_str).filter(|name|!name.trim().is_empty()).unwrap_or("system-monitor-alert-history.csv");
+                match host_request(&mut input,&output_tx,&mut host_request_id,"file.save",json!({"suggestedName":suggested_name,"content":csv,"filters":[{"name":"CSV","extensions":["csv"]}]})){
+                    Ok(result)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result,error:String::new()},
+                    Err(error)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error}
+                }
+            }
             "system.history.clear"=>{
                 let history=store.lock().map_err(|_|"state lock poisoned".to_string())?.alert_history.clone();
                 history.clear();
@@ -1642,6 +1679,12 @@ mod tests{
         store.config.alert_history_enabled=false;
         store.record_alert_transitions(&[AlertTransition::new("cpu","CPU utilization",Some(96.0),Health::Warning,Health::Critical,cfg)]);
         assert_eq!(store.alert_history.snapshot().len(),1);
+    }
+    #[test] fn alert_history_csv_escapes_commas_and_quotes(){
+        let event=AlertHistoryEvent{id:"1".into(),timestamp:42,metric:"cpu".into(),title:"CPU, utilization".into(),status:"Warning".into(),value:"81.0%".into(),threshold:"> 70.0".into(),sound:true,notification:false,details:"State changed from \"healthy\"".into()};
+        let csv=alert_history_csv(&[event],&json!({}));
+        assert!(csv.contains("\"CPU, utilization\""));
+        assert!(csv.contains("\"State changed from \"\"healthy\"\"\""));
     }
     #[test] fn alert_history_clear_preserves_disabled_setting(){
         let store=Store::new();
