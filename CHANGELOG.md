@@ -30,7 +30,7 @@ Persistent alert-history and History UX release.
 - Alert History is separate from the existing in-memory telemetry history used by Overview graphs and telemetry CSV export.
 
 ### Verification
-- Rust tests passed with **32 tests and 0 failures** before the final History UX/export polish.
+- Exact-main Rust validation passed with **33 tests and 0 failures**.
 - Optimized Windows package builds passed during feature validation.
 - Manual Windows acceptance covered History layout, controls, date/time pickers, Clear History, calendar icons, and filtered CSV export.
 
