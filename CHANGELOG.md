@@ -1,5 +1,40 @@
 # Changelog
 
+## v0.5.0
+
+Persistent alert-history and History UX release.
+
+### Added
+- Persistent Alert History for real Warning, Critical, and Recovered metric transitions.
+- History enable/disable control in General settings. Disabling History stops new persistence without disabling monitoring, alert evaluation, sound, or notifications, and it preserves existing saved History.
+- Dedicated History tab with search, metric/event filters, sortable columns, pagination, and From/To filtering.
+- Friendly in-app date/time pickers for From and To, including calendar navigation, hour/minute selection, AM/PM, Now, Clear, Cancel, and Apply actions.
+- Calendar icons inside the From and To fields.
+- Clear History action with an in-app confirmation dialog.
+- Alert-History CSV export that respects the active History filters.
+
+### Improved
+- History tab placement and separator now match the RemoteHand monitor-family navigation pattern.
+- History table columns use consistent left alignment and fixed proportions.
+- History refresh/pagination uses a latest-request-wins flow so live alert refreshes do not swallow manual navigation.
+- Live History refresh is debounced to avoid competing requests.
+
+### Fixed
+- Refresh, Previous, Next, and Clear History controls now work reliably while live alert events are arriving.
+- From/To validation prevents invalid ranges.
+- CSV escaping correctly handles commas, quotes, and line breaks.
+
+### Compatibility
+- Plugin API remains **v1**.
+- Existing CPU, Memory, GPU, Disk, Processes, thresholds, alerts, top-bar/tray surfaces, telemetry history, and settings remain compatible.
+- Alert History is separate from the existing in-memory telemetry history used by Overview graphs and telemetry CSV export.
+
+### Verification
+- Rust tests passed with **32 tests and 0 failures** before the final History UX/export polish.
+- Optimized Windows package builds passed during feature validation.
+- Manual Windows acceptance covered History layout, controls, date/time pickers, Clear History, calendar icons, and filtered CSV export.
+
+
 ## v0.4.0
 
 Disk monitoring and live severity-surface release.
