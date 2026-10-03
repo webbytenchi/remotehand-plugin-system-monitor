@@ -1,8 +1,24 @@
 # RemoteHand System Monitor
 
-Status: **v0.4.0**
+Status: **v0.5.0**
 
 RemoteHand System Monitor is a Windows-first plugin for local CPU, memory, and GPU monitoring. It keeps hardware-monitoring semantics inside the plugin while RemoteHand core provides only generic plugin infrastructure.
+
+## v0.5.0 scope
+
+v0.5.0 adds persistent alert-event History and History controls while keeping telemetry history and alert delivery independent.
+
+- persistent History for real Warning, Critical, and Recovered metric transitions
+- Enable Alerts History setting; disabling it stops new persistence without disabling alerts, sound, or notifications
+- existing saved History remains available while History is disabled
+- dedicated History tab with search, metric/event filters, sortable columns, pagination, and From/To filtering
+- in-app calendar/time picker for From and To, with Now, Clear, Cancel, and Apply actions
+- calendar icons in the From and To fields
+- Clear History with in-app confirmation
+- filtered alert-History CSV export
+- History layout/navigation aligned with the RemoteHand monitor-family style
+
+The existing Overview telemetry history, graphs, and telemetry CSV export remain separate from persistent alert-event History.
 
 ## v0.4.0 scope
 
@@ -85,13 +101,20 @@ Top-bar sparklines retain per-sample health coloring, so only samples that cross
 
 ## CSV export
 
-CSV files are suggested using the local-time pattern:
+System Monitor has two CSV export paths:
+
+- Overview exports sampled telemetry for the selected in-memory history window.
+- History exports persistent alert events matching the active History filters.
+
+Overview CSV files are suggested using the local-time pattern:
 
 ```text
 system-monitor-history-YYYY-MM-DD-HHmm.csv
 ```
 
-Exports contain sampled telemetry for the selected history window, including timestamp, CPU utilization, memory values, per-core CPU utilization, available per-GPU utilization/memory/temperature fields, and per-disk usage, used/free/total bytes, plus read/write bytes per second.
+Overview exports contain sampled telemetry for the selected history window, including timestamp, CPU utilization, memory values, per-core CPU utilization, available per-GPU utilization/memory/temperature fields, and per-disk usage, used/free/total bytes, plus read/write bytes per second.
+
+Alert-History CSV files use the local-time pattern `system-monitor-alert-history-YYYY-MM-DD-HHmm.csv` and contain timestamp, metric, event, value, threshold, delivery flags, and details for the currently filtered persistent History rows.
 
 ## Platform direction
 
@@ -117,7 +140,7 @@ Do not add CPU-, GPU-, sensor-, vendor-, or hardware-specific logic to RemoteHan
 
 ## Current non-goals
 
-Not in v0.4.0:
+Not in v0.5.0:
 
 - CPU temperature
 - disk temperature / SMART or NVMe health telemetry
@@ -128,4 +151,4 @@ Not in v0.4.0:
 - persistent telemetry database
 - motherboard-wide sensor-suite replacement
 
-See `V0.1.0-DESIGN.md` for the original baseline design. v0.2.0 extended that baseline with native Windows GPU monitoring, v0.3.0 added process inspection and selected process actions, and v0.4.0 adds per-volume disk monitoring and disk-aware alert/surface integration.
+See `V0.1.0-DESIGN.md` for the original baseline design. v0.2.0 extended that baseline with native Windows GPU monitoring, v0.3.0 added process inspection and selected process actions, and v0.4.0 added per-volume disk monitoring and disk-aware alert/surface integration, and v0.5.0 adds persistent alert-event History with independent enable/disable, filtering, clearing, and CSV export.
