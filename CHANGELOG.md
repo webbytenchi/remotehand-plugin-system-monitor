@@ -9,7 +9,8 @@ Global alert-sound mute and persistence release.
 - Backward-compatible default-on behavior for existing installations.
 
 ### Fixed
-- Global mute suppresses System Monitor alert audio while preserving monitoring, visual state, notifications, and History.
+- Global mute suppresses System Monitor alert audio while preserving monitoring, alert evaluation, visual state, notifications, and History.
+- The preference persists across restarts; configurations created before this setting existed remain sound-enabled by default.
 
 ### Verification
 - Added regression coverage for default, serialization, round-trip persistence, and legacy-config compatibility. Build and Windows runtime validation are pending.
