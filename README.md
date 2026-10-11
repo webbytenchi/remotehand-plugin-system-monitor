@@ -8,9 +8,10 @@ RemoteHand System Monitor is a Windows-first plugin for local CPU, memory, and G
 
 v0.5.1 adds a persistent global alert-sound mute while keeping monitoring and other alert delivery channels independent.
 
-- **Enable alert sounds** preference in General settings
-- setting persists through the existing configuration-save path and remains enabled by default for existing installations
-- global mute suppresses sound playback without disabling monitoring, visual updates, notifications, or History
+- **Enable alert sounds** checkbox in General settings controls alert audio globally.
+- The preference is saved with plugin configuration and persists across RemoteHand restarts.
+- Existing installations and older configuration files default to sounds enabled unless the user turns the preference off.
+- When disabled, alert audio is muted while monitoring, alert evaluation, visual state updates, native notifications, and persistent History continue normally.
 
 ## v0.5.0 scope
 
