@@ -238,6 +238,8 @@ struct Config {
     default_window_minutes: u64,
     #[serde(default = "default_true")]
     alert_history_enabled: bool,
+    #[serde(default = "default_true")]
+    alert_sounds_enabled: bool,
     cpu: MetricConfig,
     temperature: MetricConfig,
     memory: MetricConfig,
@@ -252,6 +254,7 @@ impl Default for Config {
             sample_seconds: DEFAULT_SAMPLE_SECONDS,
             default_window_minutes: 15,
             alert_history_enabled: true,
+            alert_sounds_enabled: true,
             cpu: {
                 let mut m=metric_config(70.0,95.0);
                 m.overview_visualization=Some("graph".into());
