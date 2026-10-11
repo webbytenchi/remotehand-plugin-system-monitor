@@ -1890,4 +1890,22 @@ mod tests{
         assert_eq!(series[1]["color"],cfg.warning_color);
         assert_eq!(series[2]["color"],cfg.critical_color);
     }
+
+    #[test] fn global_alert_sound_setting_defaults_enabled_and_round_trips(){
+        let defaults=Config::default();
+        assert!(defaults.alert_sounds_enabled);
+
+        let serialized=serde_json::to_value(&defaults).unwrap();
+        assert_eq!(serialized["alertSoundsEnabled"],json!(true));
+
+        let mut muted=serialized.clone();
+        muted["alertSoundsEnabled"]=json!(false);
+        let restored:Config=serde_json::from_value(muted).unwrap();
+        assert!(!restored.alert_sounds_enabled);
+
+        let mut legacy=serialized;
+        legacy.as_object_mut().unwrap().remove("alertSoundsEnabled");
+        let restored_legacy:Config=serde_json::from_value(legacy).unwrap();
+        assert!(restored_legacy.alert_sounds_enabled);
+    }
 }
