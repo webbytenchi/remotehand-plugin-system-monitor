@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.5.1
+
+Global alert-sound mute and persistence release.
+
+### Added
+- Global **Enable alert sounds** preference in General settings, persisted with the plugin configuration.
+- Backward-compatible default-on behavior for existing installations.
+
+### Fixed
+- Global mute suppresses System Monitor alert audio while preserving monitoring, visual state, notifications, and History.
+
+### Verification
+- Added regression coverage for default, serialization, round-trip persistence, and legacy-config compatibility. Build and Windows runtime validation are pending.
+
 ## v0.5.0
 
 Persistent alert-history and History UX release.
