@@ -1,8 +1,16 @@
 # RemoteHand System Monitor
 
-Status: **v0.5.0**
+Status: **v0.5.1**
 
 RemoteHand System Monitor is a Windows-first plugin for local CPU, memory, and GPU monitoring. It keeps hardware-monitoring semantics inside the plugin while RemoteHand core provides only generic plugin infrastructure.
+
+## v0.5.1 scope
+
+v0.5.1 adds a persistent global alert-sound mute while keeping monitoring and other alert delivery channels independent.
+
+- **Enable alert sounds** preference in General settings
+- setting persists through the existing configuration-save path and remains enabled by default for existing installations
+- global mute suppresses sound playback without disabling monitoring, visual updates, notifications, or History
 
 ## v0.5.0 scope
 
