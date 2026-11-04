@@ -1,7 +1,7 @@
 {
   "id": "remotehand.system-monitor",
   "name": "RemoteHand System Monitor",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "apiVersion": 1,
   "author": "RemoteHand",
   "description": "Local CPU, memory, GPU, disk, and process monitoring for RemoteHand.",
