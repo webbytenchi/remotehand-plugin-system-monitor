@@ -1,10 +1,10 @@
 # RemoteHand System Monitor
 
-Status: **v0.5.1**
+Status: **v0.5.2**
 
 RemoteHand System Monitor is a Windows-first plugin for local CPU, memory, and GPU monitoring. It keeps hardware-monitoring semantics inside the plugin while RemoteHand core provides only generic plugin infrastructure.
 
-## API-enabled dashboards — feature branch candidate
+## v0.5.2 — API-enabled dashboards
 
 The optional, separate `api.json` file registers **seven** read-only GET routes in RemoteHand's generic Plugin API Gateway v1, without adding System Monitor-specific code to Core. An older RemoteHand host ignores `api.json` and continues running the standard System Monitor UI.
 
@@ -30,7 +30,7 @@ The optional, separate `api.json` file registers **seven** read-only GET routes 
 - The catalog describes **System Monitor's** fields; future plugins (e.g., Target Monitor) can publish their own `/catalog` endpoint under the same generic API contract. Grafana may use a JSON data source or separate metrics adapter; this plugin does not directly implement Prometheus exposition.
 - Device names are disclosed to any holder of the RemoteHand API bearer token. Limit API access to trusted clients and use HTTPS on network interfaces. No process data, serial numbers, GPU LUIDs, raw mount paths, alert sounds or internal plugin configuration are sent.
 
-This is an **unmerged test candidate** retaining v0.5.1 manifest metadata for testing; a new version must be assigned before publishing. Validate the rebuilt ZIP, older-host UI compatibility, 7-route dynamic discovery, and response samples before release.
+The System Monitor v0.5.2 API requires a RemoteHand Core host implementing the generic Plugin API Gateway v1; older RemoteHand versions ignore the optional `api.json` and keep the normal System Monitor UI. The 7-route feature was accepted on Windows with the gateway feature build, with authentication/disabled-plugin behavior operator-confirmed. Packaged artifacts must be rebuilt from tagged v0.5.2 sources after merge and independently verified before release.
 
 ## v0.5.1 scope
 
