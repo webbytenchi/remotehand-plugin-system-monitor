@@ -2098,6 +2098,56 @@ mod tests{
         assert!(restored_legacy.alert_sounds_enabled);
     }
     #[test]
+    fn api_disk_labels_and_opaque_ids_are_dashboard_ready() {
+        let disk = DiskTelemetry {
+            id:"c:".into(), name:"System".into(), mount_point:"C:\\\\".into(),
+            file_system:"NTFS".into(), kind:"SSD".into(), removable:false,
+            total_bytes:100, used_bytes:60, free_bytes:40, usage_percent:60.0,
+            read_bytes_per_second:12.0, write_bytes_per_second:24.0,
+        };
+        assert_eq!(api_disk_label(&disk), "C: · System");
+        let id = api_disk_id(&disk);
+        assert!(id.starts_with("disk-"));
+        assert!(!id.contains("c:"));
+        assert_eq!(id, api_disk_id(&disk));
+        let mut store=Store::new();
+        store.history.push_back(Sample {
+            timestamp:123,cpu_percent:10.0,core_percent:vec![],temperature_c:None,
+            temperature_source:None,temperature_sensors:vec![],temperature_provider:String::new(),
+            temperature_error:None,memory_percent:20.0,memory_used_bytes:1,
+            memory_available_bytes:2,memory_total_bytes:3,disks:vec![disk],
+        });
+        store.disk_trackers.insert("c:".into(), TransitionTracker{
+            committed:Health::Warning, ..Default::default()
+        });
+        let response=api_read_value(&store,"disks").unwrap();
+        assert_eq!(response["items"][0]["name"],"C: · System");
+        assert_eq!(response["items"][0]["id"],id);
+        assert!(response.to_string().find("mountPoint").is_none());
+        let alerts=api_read_value(&store,"alerts").unwrap();
+        assert_eq!(alerts["items"][0]["deviceId"],id);
+        assert_eq!(alerts["items"][0]["name"],"C: · System — Disk Usage");
+    }
+
+    #[test]
+    fn api_catalog_is_machine_readable_and_descriptive() {
+        let catalog=api_read_value(&Store::new(),"catalog").unwrap();
+        assert_eq!(catalog["schemaVersion"],1);
+        assert_eq!(catalog["timestampUnit"],"unixMilliseconds");
+        assert_eq!(catalog["nullMeaning"],"unavailable");
+        let metrics=catalog["metrics"].as_array().unwrap();
+        assert!(metrics.iter().any(|m|
+            m["source"]=="metrics" && m["key"]=="cpuPercent" && m["unit"]=="percent"
+            && m["label"]=="CPU Usage"));
+        assert!(metrics.iter().any(|m|
+            m["source"]=="disks.items" && m["key"]=="readBytesPerSecond"
+            && m["unit"]=="bytesPerSecond"));
+        assert!(metrics.iter().any(|m|
+            m["source"]=="gpus.items" && m["key"]=="utilizationPercent"
+            && m["deviceType"]=="gpu"));
+    }
+
+    #[test]
     fn api_projection_does_not_expose_config_hardware_identity_or_processes() {
         let mut store = Store::new();
         store.config.alert_sounds_enabled = false;
