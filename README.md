@@ -1,8 +1,36 @@
 # RemoteHand System Monitor
 
-Status: **v0.5.1**
+Status: **v0.5.2**
 
 RemoteHand System Monitor is a Windows-first plugin for local CPU, memory, and GPU monitoring. It keeps hardware-monitoring semantics inside the plugin while RemoteHand core provides only generic plugin infrastructure.
+
+## v0.5.2 — API-enabled dashboards
+
+The optional, separate `api.json` file registers **seven** read-only GET routes in RemoteHand's generic Plugin API Gateway v1, without adding System Monitor-specific code to Core. An older RemoteHand host ignores `api.json` and continues running the standard System Monitor UI.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `/api/v1/system-monitor` | CPU, memory, temperature and device counts |
+| `/api/v1/system-monitor/metrics` | Host CPU, per-core, memory and temperature measurements |
+| `/api/v1/system-monitor/gpus` | GPU usage, temperature and memory measurements with readable names |
+| `/api/v1/system-monitor/disks` | Disk capacity and throughput with readable names |
+| `/api/v1/system-monitor/history` | Latest 120 CPU, memory and temperature samples |
+| `/api/v1/system-monitor/alerts` | Active warning/critical alerts, including matching device IDs and readable labels |
+| `/api/v1/system-monitor/catalog` | Machine-readable measurement definitions for dashboard builders |
+
+### DisplayHand / Grafana contract
+
+- Numeric field names stay backward-compatible (e.g., `cpuPercent`, `memoryUsedBytes`, `readBytesPerSecond`). All metric values are unformatted JSON numbers, or `null` if unknown; `null` must never be rendered as zero. The source `timestamp` fields represent Unix **milliseconds**.
+- `/catalog` reports `schemaVersion: 1`, `timestampUnit: unixMilliseconds`, `nullMeaning: unavailable`, and metric definitions with `key`, `label`, `unit`, `source`, and `kind`, plus optional `deviceType` and `min`/`max` fields. A metric is selected by **source + key**; for device sources, also select a device `id`.
+- GPU `items[]` include `index`, `id` (e.g. `gpu-0`), `name` (e.g. `VMware SVGA 3D`), and `displayName`, in addition to the existing telemetry. The GPU ID follows live OS enumeration: it can change when GPUs are added, removed, or reordered. Do **not** treat it as a permanent cross-reboot hardware identifier.
+- Disk `items[]` include `index`, opaque local `id` derived from the plugin's per-volume identity, `name`, and `displayName`, plus existing telemetry. Windows display names include the drive letter and a friendly label when available (e.g. `C: · System`); full mount paths, filesystem internals and raw IDs remain excluded. The opaque ID is a non-cryptographic fingerprint, **not** an anonymization guarantee; it can change when volumes are remounted or renamed.
+- `/alerts` returns `items[]` with existing `metric` and `state` plus `name` and `unit`. GPU and disk alerts also include a `deviceId` matching the corresponding telemetry item. Only current warning and critical states appear. `timestamp` denotes the latest metric sample time, not the transition time.
+- CPU and memory `percent` metrics represent values on 0–100 scale, not fractions. Byte measurements are raw bytes; throughput uses bytes per second. `celsius` means degrees Celsius.
+- Devices can have missing telemetry in VMs or unsupported hardware. Dashboards must handle an empty device list, missing history, and nullable temperature / utilization fields.
+- The catalog describes **System Monitor's** fields; future plugins (e.g., Target Monitor) can publish their own `/catalog` endpoint under the same generic API contract. Grafana may use a JSON data source or separate metrics adapter; this plugin does not directly implement Prometheus exposition.
+- Device names are disclosed to any holder of the RemoteHand API bearer token. Limit API access to trusted clients and use HTTPS on network interfaces. No process data, serial numbers, GPU LUIDs, raw mount paths, alert sounds or internal plugin configuration are sent.
+
+The System Monitor v0.5.2 API requires a RemoteHand Core host implementing the generic Plugin API Gateway v1; older RemoteHand versions ignore the optional `api.json` and keep the normal System Monitor UI. The 7-route feature was accepted on Windows with the gateway feature build, with authentication/disabled-plugin behavior operator-confirmed. Packaged artifacts must be rebuilt from tagged v0.5.2 sources after merge and independently verified before release.
 
 ## v0.5.1 scope
 

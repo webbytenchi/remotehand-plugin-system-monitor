@@ -1180,6 +1180,196 @@ fn emit_surfaces(output:&mpsc::Sender<Value>,store:&Store)->Result<(),String>{
     send_outbound(output,PluginEvent{message_type:"plugin.event",event:"topbar.update",payload:top})?;
     send_outbound(output,PluginEvent{message_type:"plugin.event",event:"tray.update",payload:tray})
 }
+// These IDs correlate dashboard devices and alert items without exposing mount
+// paths or Windows GPU LUIDs. GPU indices are scoped to current enumeration.
+fn api_disk_id(disk: &DiskTelemetry) -> String {
+    // Non-cryptographic fingerprint for an opaque local dashboard key.
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in disk.id.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("disk-{hash:016x}")
+}
+
+fn api_disk_label(disk: &DiskTelemetry) -> String {
+    let name = disk.name.trim();
+    // Expose only root drive-letter labels on Windows, not filesystem paths.
+    let mount = disk.mount_point.as_bytes();
+    let drive = if mount.len() >= 2 && mount[0].is_ascii_alphabetic() && mount[1] == b':' {
+        Some(format!("{}:", (mount[0] as char).to_ascii_uppercase()))
+    } else { None };
+    match (drive, name.is_empty()) {
+        (Some(drive), false) if name != drive => format!("{drive} · {name}"),
+        (Some(drive), _) => drive,
+        (None, false) => name.to_string(),
+        (None, true) => "Disk".to_string(),
+    }
+}
+
+fn api_catalog() -> Value {
+    // Stable field names and raw units; no locale-dependent formatted numbers.
+    json!({
+        "schemaVersion": 1,
+        "timestampUnit": "unixMilliseconds",
+        "nullMeaning": "unavailable",
+        "deviceIdScope": "per-host; GPU IDs follow enumeration and may change when adapters change",
+        "metrics": [
+            {"key":"cpuPercent","label":"CPU Usage","unit":"percent","source":"metrics","kind":"gauge","min":0,"max":100},
+            {"key":"corePercent","label":"CPU Core Usage","unit":"percent","source":"metrics","kind":"series","min":0,"max":100},
+            {"key":"memoryPercent","label":"Memory Usage","unit":"percent","source":"metrics","kind":"gauge","min":0,"max":100},
+            {"key":"memoryUsedBytes","label":"Used Memory","unit":"bytes","source":"metrics","kind":"number"},
+            {"key":"memoryAvailableBytes","label":"Available Memory","unit":"bytes","source":"metrics","kind":"number"},
+            {"key":"memoryTotalBytes","label":"Total Memory","unit":"bytes","source":"metrics","kind":"number"},
+            {"key":"temperatureC","label":"CPU Temperature","unit":"celsius","source":"metrics","kind":"gauge"},
+            {"key":"utilizationPercent","label":"GPU Usage","unit":"percent","source":"gpus.items","deviceType":"gpu","kind":"gauge","min":0,"max":100},
+            {"key":"dedicatedUsedBytes","label":"Dedicated GPU Memory Used","unit":"bytes","source":"gpus.items","deviceType":"gpu","kind":"number"},
+            {"key":"dedicatedTotalBytes","label":"Dedicated GPU Memory Total","unit":"bytes","source":"gpus.items","deviceType":"gpu","kind":"number"},
+            {"key":"sharedUsedBytes","label":"Shared GPU Memory Used","unit":"bytes","source":"gpus.items","deviceType":"gpu","kind":"number"},
+            {"key":"sharedTotalBytes","label":"Shared GPU Memory Total","unit":"bytes","source":"gpus.items","deviceType":"gpu","kind":"number"},
+            {"key":"temperatureC","label":"GPU Temperature","unit":"celsius","source":"gpus.items","deviceType":"gpu","kind":"gauge"},
+            {"key":"usagePercent","label":"Disk Usage","unit":"percent","source":"disks.items","deviceType":"disk","kind":"gauge","min":0,"max":100},
+            {"key":"usedBytes","label":"Used Disk Capacity","unit":"bytes","source":"disks.items","deviceType":"disk","kind":"number"},
+            {"key":"freeBytes","label":"Free Disk Capacity","unit":"bytes","source":"disks.items","deviceType":"disk","kind":"number"},
+            {"key":"totalBytes","label":"Total Disk Capacity","unit":"bytes","source":"disks.items","deviceType":"disk","kind":"number"},
+            {"key":"readBytesPerSecond","label":"Disk Read Rate","unit":"bytesPerSecond","source":"disks.items","deviceType":"disk","kind":"number"},
+            {"key":"writeBytesPerSecond","label":"Disk Write Rate","unit":"bytesPerSecond","source":"disks.items","deviceType":"disk","kind":"number"}
+        ]
+    })
+}
+
+// Explicit public API projection. Never send status_value() to HTTP clients:
+// it contains private configuration, hardware identity and unbounded history.
+fn api_active_alert(metric: &str, tracker: &TransitionTracker) -> Option<Value> {
+    match tracker.committed {
+        Health::Warning | Health::Critical => {
+            let (name, unit) = match metric {
+                "cpu" => ("CPU Usage", "percent"),
+                "memory" => ("Memory Usage", "percent"),
+                "temperature" => ("CPU Temperature", "celsius"),
+                _ => (metric, "percent"),
+            };
+            Some(json!({
+                "metric": metric, "name": name, "unit": unit,
+                "state": health_name(tracker.committed)
+            }))
+        },
+        Health::Healthy | Health::Unavailable => None,
+    }
+}
+
+fn api_read_value(store: &Store, view: &str) -> Option<Value> {
+    let latest = store.history.back();
+    Some(match view {
+        "summary" => json!({
+            "sampleTimestamp": latest.map(|s| s.timestamp),
+            "cpuPercent": latest.map(|s| s.cpu_percent),
+            "memoryPercent": latest.map(|s| s.memory_percent),
+            "temperatureC": latest.and_then(|s| s.temperature_c),
+            "gpuCount": store.gpu_latest.len(),
+            "diskCount": latest.map_or(0, |s| s.disks.len())
+        }),
+        "metrics" => json!({
+            "timestamp": latest.map(|s| s.timestamp),
+            "cpuPercent": latest.map(|s| s.cpu_percent),
+            "corePercent": latest.map(|s| &s.core_percent),
+            "temperatureC": latest.and_then(|s| s.temperature_c),
+            "memoryPercent": latest.map(|s| s.memory_percent),
+            "memoryUsedBytes": latest.map(|s| s.memory_used_bytes),
+            "memoryAvailableBytes": latest.map(|s| s.memory_available_bytes),
+            "memoryTotalBytes": latest.map(|s| s.memory_total_bytes)
+        }),
+        "gpus" => json!({
+            "timestamp": store.gpu_history.back().map(|s| s.timestamp),
+            "items": store.gpu_latest.iter().map(|g| json!({
+                "index": g.index,
+                "id": format!("gpu-{}", g.index),
+                "name": g.name,
+                "displayName": format!("GPU {} · {}", g.index, g.name),
+                "utilizationPercent": g.utilization_percent,
+                "dedicatedUsedBytes": g.dedicated_used_bytes,
+                "dedicatedTotalBytes": g.dedicated_total_bytes,
+                "sharedUsedBytes": g.shared_used_bytes,
+                "sharedTotalBytes": g.shared_total_bytes,
+                "temperatureC": g.temperature_c
+            })).collect::<Vec<_>>()
+        }),
+        "disks" => json!({
+            "timestamp": latest.map(|s| s.timestamp),
+            // Add recognizable display metadata without exposing full mount paths,
+            // raw device identifiers, filesystem details or serial numbers.
+            "items": latest.map(|s| s.disks.iter().enumerate().map(|(index,d)| json!({
+                "index": index,
+                "id": api_disk_id(d),
+                "name": api_disk_label(d),
+                "displayName": api_disk_label(d),
+                "totalBytes": d.total_bytes,
+                "usedBytes": d.used_bytes,
+                "freeBytes": d.free_bytes,
+                "usagePercent": d.usage_percent,
+                "readBytesPerSecond": d.read_bytes_per_second,
+                "writeBytesPerSecond": d.write_bytes_per_second
+            })).collect::<Vec<_>>()).unwrap_or_default()
+        }),
+        "history" => json!({
+            // At most 120 sampled points; excludes per-process and device identity data.
+            "items": store.history.iter()
+                .skip(store.history.len().saturating_sub(120))
+                .map(|s| json!({
+                    "timestamp": s.timestamp,
+                    "cpuPercent": s.cpu_percent,
+                    "memoryPercent": s.memory_percent,
+                    "temperatureC": s.temperature_c
+                })).collect::<Vec<_>>()
+        }),
+        "catalog" => api_catalog(),
+        "alerts" => {
+            let mut items = Vec::new();
+            for (metric, tracker) in [
+                ("cpu", &store.cpu_tracker),
+                ("temperature", &store.temp_tracker),
+                ("memory", &store.memory_tracker)
+            ] {
+                if let Some(alert) = api_active_alert(metric, tracker) { items.push(alert); }
+            }
+            // Link live alert trackers to their device records using the same IDs
+            // exposed in /gpus and /disks. Never expose GPU LUIDs or raw mount paths.
+            for gpu in &store.gpu_latest {
+                for (kind, key, label) in [
+                    ("utilization", "GPU Usage", "percent"),
+                    ("dedicatedMemory", "Dedicated GPU Memory", "percent"),
+                    ("sharedMemory", "Shared GPU Memory", "percent"),
+                    ("temperature", "GPU Temperature", "celsius")
+                ] {
+                    let tracker_key = format!("{}:{kind}", gpu.luid);
+                    if let Some(tracker) = store.gpu_trackers.get(&tracker_key) {
+                        if let Some(mut alert) = api_active_alert(&gpu_metric_id(gpu.index,kind), tracker) {
+                            alert["deviceId"] = json!(format!("gpu-{}",gpu.index));
+                            alert["name"] = json!(format!("GPU {} · {} — {key}",gpu.index,gpu.name));
+                            alert["unit"] = json!(label);
+                            items.push(alert);
+                        }
+                    }
+                }
+            }
+            if let Some(sample) = latest {
+                for disk in &sample.disks {
+                    if let Some(tracker) = store.disk_trackers.get(&disk.id) {
+                        if let Some(mut alert) = api_active_alert(&disk_metric_id(&disk.id),tracker) {
+                            alert["deviceId"] = json!(api_disk_id(disk));
+                            alert["name"] = json!(format!("{} — Disk Usage",api_disk_label(disk)));
+                            alert["unit"] = json!("percent");
+                            items.push(alert);
+                        }
+                    }
+                }
+            }
+            json!({"timestamp":latest.map(|s|s.timestamp),"items": items})
+        },
+        _ => return None,
+    })
+}
+
 fn status_value(store:&Store)->Value{
     json!({
         "config":&store.config,
@@ -1406,6 +1596,14 @@ fn main()->Result<(),String>{
         let payload=read_frame(&mut input)?;
         let request:HostRequest=match serde_json::from_slice(&payload){Ok(v)=>v,Err(_)=>continue};
         let response=match request.method.as_str(){
+            "api.read" | "system.api.read"=>{
+                let view=request.params.get("view").and_then(Value::as_str).unwrap_or("");
+                let guard=store.lock().map_err(|_|"state lock poisoned".to_string())?;
+                match api_read_value(&guard,view){
+                    Some(result)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result,error:String::new()},
+                    None=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error:"unknown system API view".into()},
+                }
+            }
             "system.status"=>{
                 let history=store.lock().map_err(|_|"state lock poisoned".to_string())?.alert_history.clone();
                 let _=save_alert_history(&mut input,&output_tx,&mut host_request_id,&history);
@@ -1908,4 +2106,126 @@ mod tests{
         let restored_legacy:Config=serde_json::from_value(legacy).unwrap();
         assert!(restored_legacy.alert_sounds_enabled);
     }
+    #[test]
+    fn api_disk_labels_and_opaque_ids_are_dashboard_ready() {
+        let disk = DiskTelemetry {
+            id:"c:".into(), name:"System".into(), mount_point:"C:\\\\".into(),
+            file_system:"NTFS".into(), kind:"SSD".into(), removable:false,
+            total_bytes:100, used_bytes:60, free_bytes:40, usage_percent:60.0,
+            read_bytes_per_second:12.0, write_bytes_per_second:24.0,
+        };
+        assert_eq!(api_disk_label(&disk), "C: · System");
+        let id = api_disk_id(&disk);
+        assert!(id.starts_with("disk-"));
+        assert!(!id.contains("c:"));
+        assert_eq!(id, api_disk_id(&disk));
+        let mut store=Store::new();
+        store.history.push_back(Sample {
+            timestamp:123,cpu_percent:10.0,core_percent:vec![],temperature_c:None,
+            temperature_source:None,temperature_sensors:vec![],temperature_provider:String::new(),
+            temperature_error:None,memory_percent:20.0,memory_used_bytes:1,
+            memory_available_bytes:2,memory_total_bytes:3,disks:vec![disk],
+        });
+        store.disk_trackers.insert("c:".into(), TransitionTracker{
+            committed:Health::Warning, ..Default::default()
+        });
+        let response=api_read_value(&store,"disks").unwrap();
+        assert_eq!(response["items"][0]["name"],"C: · System");
+        assert_eq!(response["items"][0]["id"],id);
+        assert!(response.to_string().find("mountPoint").is_none());
+        let alerts=api_read_value(&store,"alerts").unwrap();
+        assert_eq!(alerts["items"][0]["deviceId"],id);
+        assert_eq!(alerts["items"][0]["name"],"C: · System — Disk Usage");
+    }
+
+    #[test]
+    fn api_gpu_names_are_readable_and_luids_stay_private() {
+        let mut store = Store::new();
+        store.gpu_latest.push(GpuTelemetry {
+            index:0, name:"Test GPU".into(), luid:"private-luid".into(),
+            utilization_percent:Some(25.0), engines:vec![],
+            dedicated_used_bytes:Some(25), dedicated_total_bytes:100,
+            shared_used_bytes:None, shared_total_bytes:200,
+            temperature_c:None, temperature_provider:None, telemetry_error:None,
+        });
+        store.gpu_trackers.insert("private-luid:utilization".into(),
+            TransitionTracker { committed:Health::Critical, ..Default::default() });
+        let gpus=api_read_value(&store,"gpus").unwrap();
+        assert_eq!(gpus["items"][0]["id"], "gpu-0");
+        assert_eq!(gpus["items"][0]["name"], "Test GPU");
+        assert_eq!(gpus["items"][0]["displayName"], "GPU 0 · Test GPU");
+        assert_eq!(gpus["items"][0]["utilizationPercent"], 25.0);
+        assert!(!gpus.to_string().contains("private-luid"));
+        let alerts=api_read_value(&store,"alerts").unwrap();
+        assert_eq!(alerts["items"][0]["deviceId"], "gpu-0");
+        assert_eq!(alerts["items"][0]["name"], "GPU 0 · Test GPU — GPU Usage");
+        assert_eq!(alerts["items"][0]["state"], "critical");
+        assert!(!alerts.to_string().contains("private-luid"));
+    }
+
+    #[test]
+    fn api_catalog_is_machine_readable_and_descriptive() {
+        let catalog=api_read_value(&Store::new(),"catalog").unwrap();
+        assert_eq!(catalog["schemaVersion"],1);
+        assert_eq!(catalog["timestampUnit"],"unixMilliseconds");
+        assert_eq!(catalog["nullMeaning"],"unavailable");
+        let metrics=catalog["metrics"].as_array().unwrap();
+        assert!(metrics.iter().any(|m|
+            m["source"]=="metrics" && m["key"]=="cpuPercent" && m["unit"]=="percent"
+            && m["label"]=="CPU Usage"));
+        assert!(metrics.iter().any(|m|
+            m["source"]=="disks.items" && m["key"]=="readBytesPerSecond"
+            && m["unit"]=="bytesPerSecond"));
+        assert!(metrics.iter().any(|m|
+            m["source"]=="gpus.items" && m["key"]=="utilizationPercent"
+            && m["deviceType"]=="gpu"));
+    }
+
+    #[test]
+    fn api_projection_does_not_expose_config_hardware_identity_or_processes() {
+        let mut store = Store::new();
+        store.config.alert_sounds_enabled = false;
+        let private = ["config","luid","mountPoint","fileSystem","processes","soundFile","path","temperatureError"];
+        for view in ["summary","metrics","gpus","disks","history","alerts","catalog"] {
+            let value=api_read_value(&store,view).expect("supported view");
+            let encoded=value.to_string();
+            for field in private {
+                assert!(!encoded.contains(&format!("\"{field}\"")), "{view} exposed {field}");
+            }
+        }
+        assert!(api_read_value(&store,"status").is_none());
+        assert!(api_read_value(&store,"processes").is_none());
+    }
+
+    #[test]
+    fn api_alerts_only_report_active_warning_or_critical_states() {
+        let mut store=Store::new();
+        store.cpu_tracker.committed=Health::Warning;
+        store.memory_tracker.committed=Health::Healthy;
+        store.temp_tracker.committed=Health::Critical;
+        let alerts=api_read_value(&store,"alerts").unwrap();
+        let items=alerts["items"].as_array().unwrap();
+        assert_eq!(items.len(),2);
+        assert_eq!(items[0]["metric"],"cpu");
+        assert_eq!(items[1]["metric"],"temperature");
+    }
+
+    #[test]
+    fn api_history_is_bounded_to_120_points() {
+        let mut store=Store::new();
+        for timestamp in 0..200 {
+            store.history.push_back(Sample {
+                timestamp,cpu_percent:10.0,core_percent:vec![],temperature_c:None,
+                temperature_source:None,temperature_sensors:vec![],temperature_provider:String::new(),
+                temperature_error:None,memory_percent:20.0,memory_used_bytes:1,
+                memory_available_bytes:2,memory_total_bytes:3,disks:vec![]
+            });
+        }
+        let history=api_read_value(&store,"history").unwrap();
+        let rows=history["items"].as_array().unwrap();
+        assert_eq!(rows.len(),120);
+        assert_eq!(rows[0]["timestamp"],80);
+        assert_eq!(rows[119]["timestamp"],199);
+    }
+
 }

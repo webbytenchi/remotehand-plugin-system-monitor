@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "basePath": "/api/v1/system-monitor",
+  "routes": [
+    {
+      "path": "/",
+      "view": "summary",
+      "summary": "System Monitor overview",
+      "description": "CPU, RAM, temperature and device counts."
+    },
+    {
+      "path": "/metrics",
+      "view": "metrics",
+      "summary": "System metrics",
+      "description": "CPU, per-core, RAM and temperature telemetry."
+    },
+    {
+      "path": "/gpus",
+      "view": "gpus",
+      "summary": "GPU telemetry",
+      "description": "Sanitized per-device GPU utilization and memory."
+    },
+    {
+      "path": "/disks",
+      "view": "disks",
+      "summary": "Disk telemetry",
+      "description": "Sanitized disk capacity and throughput."
+    },
+    {
+      "path": "/history",
+      "view": "history",
+      "summary": "System metrics history",
+      "description": "Last 120 CPU, memory and temperature samples."
+    },
+    {
+      "path": "/alerts",
+      "view": "alerts",
+      "summary": "Active System Monitor alerts",
+      "description": "Only current warning and critical conditions."
+    },
+    {
+      "path": "/catalog",
+      "view": "catalog",
+      "summary": "Dashboard metric catalog",
+      "description": "Metric keys, display labels, units, kinds, data sources and identifier scope for DisplayHand and Grafana."
+    }
+  ]
+}

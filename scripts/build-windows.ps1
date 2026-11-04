@@ -33,6 +33,8 @@ New-Item -ItemType Directory -Force -Path $packageUiDir | Out-Null
 New-Item -ItemType Directory -Force -Path $packageAssetsDir | Out-Null
 
 Copy-Item -Force (Join-Path $repo "plugin.json") (Join-Path $packageDir "plugin.json")
+# Optional HTTP API descriptor is a separate file: older RemoteHand hosts ignore it.
+Copy-Item -Force (Join-Path $repo "api.json") (Join-Path $packageDir "api.json")
 Copy-Item -Force (Join-Path $repo "ui\index.html") (Join-Path $packageUiDir "index.html")
 Copy-Item -Force (Join-Path $repo "assets\*") $packageAssetsDir
 Copy-Item -Force $sourceExe (Join-Path $packageBinDir "remotehand-system-monitor.exe")
