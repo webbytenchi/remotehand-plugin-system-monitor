@@ -1180,6 +1180,96 @@ fn emit_surfaces(output:&mpsc::Sender<Value>,store:&Store)->Result<(),String>{
     send_outbound(output,PluginEvent{message_type:"plugin.event",event:"topbar.update",payload:top})?;
     send_outbound(output,PluginEvent{message_type:"plugin.event",event:"tray.update",payload:tray})
 }
+// Explicit public API projection. Never send status_value() to HTTP clients:
+// it contains private configuration, hardware identity and unbounded history.
+fn api_active_alert(metric: &str, tracker: &TransitionTracker) -> Option<Value> {
+    match tracker.committed {
+        Health::Warning | Health::Critical => Some(json!({
+            "metric": metric, "state": health_name(tracker.committed)
+        })),
+        Health::Healthy | Health::Unavailable => None,
+    }
+}
+
+fn api_read_value(store: &Store, view: &str) -> Option<Value> {
+    let latest = store.history.back();
+    Some(match view {
+        "summary" => json!({
+            "sampleTimestamp": latest.map(|s| s.timestamp),
+            "cpuPercent": latest.map(|s| s.cpu_percent),
+            "memoryPercent": latest.map(|s| s.memory_percent),
+            "temperatureC": latest.and_then(|s| s.temperature_c),
+            "gpuCount": store.gpu_latest.len(),
+            "diskCount": latest.map_or(0, |s| s.disks.len())
+        }),
+        "metrics" => json!({
+            "timestamp": latest.map(|s| s.timestamp),
+            "cpuPercent": latest.map(|s| s.cpu_percent),
+            "corePercent": latest.map(|s| &s.core_percent),
+            "temperatureC": latest.and_then(|s| s.temperature_c),
+            "memoryPercent": latest.map(|s| s.memory_percent),
+            "memoryUsedBytes": latest.map(|s| s.memory_used_bytes),
+            "memoryAvailableBytes": latest.map(|s| s.memory_available_bytes),
+            "memoryTotalBytes": latest.map(|s| s.memory_total_bytes)
+        }),
+        "gpus" => json!({
+            "timestamp": store.gpu_history.back().map(|s| s.timestamp),
+            "items": store.gpu_latest.iter().map(|g| json!({
+                "index": g.index,
+                "utilizationPercent": g.utilization_percent,
+                "dedicatedUsedBytes": g.dedicated_used_bytes,
+                "dedicatedTotalBytes": g.dedicated_total_bytes,
+                "sharedUsedBytes": g.shared_used_bytes,
+                "sharedTotalBytes": g.shared_total_bytes,
+                "temperatureC": g.temperature_c
+            })).collect::<Vec<_>>()
+        }),
+        "disks" => json!({
+            "timestamp": latest.map(|s| s.timestamp),
+            // Deliberately omit mount paths, volume names, drive letters, and identifiers.
+            "items": latest.map(|s| s.disks.iter().enumerate().map(|(index,d)| json!({
+                "index": index,
+                "totalBytes": d.total_bytes,
+                "usedBytes": d.used_bytes,
+                "freeBytes": d.free_bytes,
+                "usagePercent": d.usage_percent,
+                "readBytesPerSecond": d.read_bytes_per_second,
+                "writeBytesPerSecond": d.write_bytes_per_second
+            })).collect::<Vec<_>>()).unwrap_or_default()
+        }),
+        "history" => json!({
+            // At most 120 sampled points; excludes per-process and device identity data.
+            "items": store.history.iter()
+                .skip(store.history.len().saturating_sub(120))
+                .map(|s| json!({
+                    "timestamp": s.timestamp,
+                    "cpuPercent": s.cpu_percent,
+                    "memoryPercent": s.memory_percent,
+                    "temperatureC": s.temperature_c
+                })).collect::<Vec<_>>()
+        }),
+        "alerts" => {
+            let mut items = Vec::new();
+            for (metric, tracker) in [
+                ("cpu", &store.cpu_tracker),
+                ("temperature", &store.temp_tracker),
+                ("memory", &store.memory_tracker)
+            ] {
+                if let Some(alert) = api_active_alert(metric, tracker) { items.push(alert); }
+            }
+            // Stable labels without exposing adapter LUIDs or filesystem paths.
+            for (index, tracker) in store.gpu_trackers.values().enumerate() {
+                if let Some(alert) = api_active_alert(&format!("gpu-{index}"), tracker) { items.push(alert); }
+            }
+            for (index, tracker) in store.disk_trackers.values().enumerate() {
+                if let Some(alert) = api_active_alert(&format!("disk-{index}"), tracker) { items.push(alert); }
+            }
+            json!({"items": items})
+        },
+        _ => return None,
+    })
+}
+
 fn status_value(store:&Store)->Value{
     json!({
         "config":&store.config,
@@ -1406,6 +1496,14 @@ fn main()->Result<(),String>{
         let payload=read_frame(&mut input)?;
         let request:HostRequest=match serde_json::from_slice(&payload){Ok(v)=>v,Err(_)=>continue};
         let response=match request.method.as_str(){
+            "system.api.read"=>{
+                let view=request.params.get("view").and_then(Value::as_str).unwrap_or("");
+                let guard=store.lock().map_err(|_|"state lock poisoned".to_string())?;
+                match api_read_value(&guard,view){
+                    Some(result)=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:true,result,error:String::new()},
+                    None=>PluginResponse{message_type:"plugin.response",request_id:request.request_id,ok:false,result:Value::Null,error:"unknown system API view".into()},
+                }
+            }
             "system.status"=>{
                 let history=store.lock().map_err(|_|"state lock poisoned".to_string())?.alert_history.clone();
                 let _=save_alert_history(&mut input,&output_tx,&mut host_request_id,&history);
@@ -1908,4 +2006,51 @@ mod tests{
         let restored_legacy:Config=serde_json::from_value(legacy).unwrap();
         assert!(restored_legacy.alert_sounds_enabled);
     }
+    #[test]
+    fn api_projection_does_not_expose_config_hardware_identity_or_processes() {
+        let mut store = Store::new();
+        store.config.alert_sounds_enabled = false;
+        let private = ["config","luid","mountPoint","fileSystem","processes","soundFile","path","temperatureError"];
+        for view in ["summary","metrics","gpus","disks","history","alerts"] {
+            let value=api_read_value(&store,view).expect("supported view");
+            let encoded=value.to_string();
+            for field in private {
+                assert!(!encoded.contains(&format!("\"{field}\"")), "{view} exposed {field}");
+            }
+        }
+        assert!(api_read_value(&store,"status").is_none());
+        assert!(api_read_value(&store,"processes").is_none());
+    }
+
+    #[test]
+    fn api_alerts_only_report_active_warning_or_critical_states() {
+        let mut store=Store::new();
+        store.cpu_tracker.committed=Health::Warning;
+        store.memory_tracker.committed=Health::Healthy;
+        store.temp_tracker.committed=Health::Critical;
+        let alerts=api_read_value(&store,"alerts").unwrap();
+        let items=alerts["items"].as_array().unwrap();
+        assert_eq!(items.len(),2);
+        assert_eq!(items[0]["metric"],"cpu");
+        assert_eq!(items[1]["metric"],"temperature");
+    }
+
+    #[test]
+    fn api_history_is_bounded_to_120_points() {
+        let mut store=Store::new();
+        for timestamp in 0..200 {
+            store.history.push_back(Sample {
+                timestamp,cpu_percent:10.0,core_percent:vec![],temperature_c:None,
+                temperature_source:None,temperature_sensors:vec![],temperature_provider:String::new(),
+                temperature_error:None,memory_percent:20.0,memory_used_bytes:1,
+                memory_available_bytes:2,memory_total_bytes:3,disks:vec![]
+            });
+        }
+        let history=api_read_value(&store,"history").unwrap();
+        let rows=history["items"].as_array().unwrap();
+        assert_eq!(rows.len(),120);
+        assert_eq!(rows[0]["timestamp"],80);
+        assert_eq!(rows[119]["timestamp"],199);
+    }
+
 }
