@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.5.2
+
+Dashboard-ready plugin HTTP API through RemoteHand's generic Plugin API Gateway v1.
+
+### Added
+- Optional `api.json` declaration for seven read-only, authenticated GET endpoints: summary, metrics, GPUs, disks, history, active alerts, and dashboard metric catalog.
+- `/api/v1/system-monitor/catalog` for DisplayHand/Grafana widget discovery, with metric keys, descriptions, units, sources, and timestamp/null semantics.
+- Human-readable GPU and disk display names, device references, friendly active-alert labels and correlated device IDs, with sensitive hardware identifiers omitted.
+
+### Compatibility and privacy
+- Retains `plugin.json` API version 1 and the existing monitoring UI. Hosts predating the generic gateway ignore `api.json`; HTTP endpoints require a gateway-enabled Core build.
+- Keeps existing numeric JSON field names. Unavailable measurements remain null, timestamps are Unix milliseconds, metric values retain raw units. GPU indices can change after device re-enumeration; disk fingerprint IDs can change when volume identity changes.
+- Does not expose raw GPU LUIDs, complete mount paths, process data, private settings or alert sound configuration through the HTTP responses.
+
+### Verification
+- Windows `cargo test --locked` passed **40 tests, 0 failures**, including dashboard catalog, GPU names/privacy, disk names/IDs and alert correlations.
+- Windows optimized package ZIP built with seven API declarations and the packaged `api.json` verified. Earlier field-tested candidate SHA256 `219106925F8E28EEAD129ECB863A3343ED0AC4096359497513AFE636B9CEA81A` is an **unreleased v0.5.1-labelled validation build**, NOT the v0.5.2 release artifact.
+- Papa confirmed live HTTPS gateway responses for all six original routes and then `/catalog`, `/gpus`, `/disks` after replacement (HTTP 200, readable names and units). Papa separately confirmed invalid bearer tokens are rejected and disabling the plugin removes its API routes.
+- Release remains subject to a fresh build and checksum verification from the exact merged/tagged v0.5.2 commit. The generic Core gateway feature was tested but has not yet been merged into Core main.
+
+
 ## v0.5.1
 
 Global alert-sound mute and persistence release.
