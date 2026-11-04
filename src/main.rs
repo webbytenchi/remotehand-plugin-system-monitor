@@ -1496,7 +1496,7 @@ fn main()->Result<(),String>{
         let payload=read_frame(&mut input)?;
         let request:HostRequest=match serde_json::from_slice(&payload){Ok(v)=>v,Err(_)=>continue};
         let response=match request.method.as_str(){
-            "system.api.read"=>{
+            "api.read" | "system.api.read"=>{
                 let view=request.params.get("view").and_then(Value::as_str).unwrap_or("");
                 let guard=store.lock().map_err(|_|"state lock poisoned".to_string())?;
                 match api_read_value(&guard,view){
