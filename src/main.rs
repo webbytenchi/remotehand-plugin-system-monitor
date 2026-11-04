@@ -238,6 +238,8 @@ struct Config {
     default_window_minutes: u64,
     #[serde(default = "default_true")]
     alert_history_enabled: bool,
+    #[serde(default = "default_true")]
+    alert_sounds_enabled: bool,
     cpu: MetricConfig,
     temperature: MetricConfig,
     memory: MetricConfig,
@@ -252,6 +254,7 @@ impl Default for Config {
             sample_seconds: DEFAULT_SAMPLE_SECONDS,
             default_window_minutes: 15,
             alert_history_enabled: true,
+            alert_sounds_enabled: true,
             cpu: {
                 let mut m=metric_config(70.0,95.0);
                 m.overview_visualization=Some("graph".into());
@@ -1886,5 +1889,23 @@ mod tests{
         assert_eq!(series[0]["color"],cfg.healthy_color);
         assert_eq!(series[1]["color"],cfg.warning_color);
         assert_eq!(series[2]["color"],cfg.critical_color);
+    }
+
+    #[test] fn global_alert_sound_setting_defaults_enabled_and_round_trips(){
+        let defaults=Config::default();
+        assert!(defaults.alert_sounds_enabled);
+
+        let serialized=serde_json::to_value(&defaults).unwrap();
+        assert_eq!(serialized["alertSoundsEnabled"],json!(true));
+
+        let mut muted=serialized.clone();
+        muted["alertSoundsEnabled"]=json!(false);
+        let restored:Config=serde_json::from_value(muted).unwrap();
+        assert!(!restored.alert_sounds_enabled);
+
+        let mut legacy=serialized;
+        legacy.as_object_mut().unwrap().remove("alertSoundsEnabled");
+        let restored_legacy:Config=serde_json::from_value(legacy).unwrap();
+        assert!(restored_legacy.alert_sounds_enabled);
     }
 }
