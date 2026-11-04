@@ -13,7 +13,7 @@ Global alert-sound mute and persistence release.
 - The preference persists across restarts; configurations created before this setting existed remain sound-enabled by default.
 
 ### Verification
-- Added regression coverage for default, serialization, round-trip persistence, and legacy-config compatibility. Build and Windows runtime validation are pending.
+- Added regression coverage for default, serialization, round-trip persistence, and legacy-config compatibility. The operator reports using the installed v0.5.1 plugin on Windows for an extended period without reported issues. This is field-use acceptance, not a substitute for a fresh tagged-source build and release-artifact verification.
 
 ## v0.5.0
 
