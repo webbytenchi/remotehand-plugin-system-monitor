@@ -1242,9 +1242,18 @@ fn api_catalog() -> Value {
 // it contains private configuration, hardware identity and unbounded history.
 fn api_active_alert(metric: &str, tracker: &TransitionTracker) -> Option<Value> {
     match tracker.committed {
-        Health::Warning | Health::Critical => Some(json!({
-            "metric": metric, "state": health_name(tracker.committed)
-        })),
+        Health::Warning | Health::Critical => {
+            let (name, unit) = match metric {
+                "cpu" => ("CPU Usage", "percent"),
+                "memory" => ("Memory Usage", "percent"),
+                "temperature" => ("CPU Temperature", "celsius"),
+                _ => (metric, "percent"),
+            };
+            Some(json!({
+                "metric": metric, "name": name, "unit": unit,
+                "state": health_name(tracker.committed)
+            }))
+        },
         Health::Healthy | Health::Unavailable => None,
     }
 }
@@ -1355,7 +1364,7 @@ fn api_read_value(store: &Store, view: &str) -> Option<Value> {
                     }
                 }
             }
-            json!({"items": items})
+            json!({"timestamp":latest.map(|s|s.timestamp),"items": items})
         },
         _ => return None,
     })
@@ -2127,6 +2136,31 @@ mod tests{
         let alerts=api_read_value(&store,"alerts").unwrap();
         assert_eq!(alerts["items"][0]["deviceId"],id);
         assert_eq!(alerts["items"][0]["name"],"C: · System — Disk Usage");
+    }
+
+    #[test]
+    fn api_gpu_names_are_readable_and_luids_stay_private() {
+        let mut store = Store::new();
+        store.gpu_latest.push(GpuTelemetry {
+            index:0, name:"Test GPU".into(), luid:"private-luid".into(),
+            utilization_percent:Some(25.0), engines:vec![],
+            dedicated_used_bytes:Some(25), dedicated_total_bytes:100,
+            shared_used_bytes:None, shared_total_bytes:200,
+            temperature_c:None, temperature_provider:None, telemetry_error:None,
+        });
+        store.gpu_trackers.insert("private-luid:utilization".into(),
+            TransitionTracker { committed:Health::Critical, ..Default::default() });
+        let gpus=api_read_value(&store,"gpus").unwrap();
+        assert_eq!(gpus["items"][0]["id"], "gpu-0");
+        assert_eq!(gpus["items"][0]["name"], "Test GPU");
+        assert_eq!(gpus["items"][0]["displayName"], "GPU 0 · Test GPU");
+        assert_eq!(gpus["items"][0]["utilizationPercent"], 25.0);
+        assert!(!gpus.to_string().contains("private-luid"));
+        let alerts=api_read_value(&store,"alerts").unwrap();
+        assert_eq!(alerts["items"][0]["deviceId"], "gpu-0");
+        assert_eq!(alerts["items"][0]["name"], "GPU 0 · Test GPU — GPU Usage");
+        assert_eq!(alerts["items"][0]["state"], "critical");
+        assert!(!alerts.to_string().contains("private-luid"));
     }
 
     #[test]
